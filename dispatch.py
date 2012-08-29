@@ -6,9 +6,28 @@ import heapq
 import itertools
 import queue
 import warnings
+import weakref
 
 
 __doc__ = """Cooperative multitasking in pure Python, using coroutines."""
+
+
+# Coding conventions
+# - Channels (_Channel instances) and channel handles (ChannelHandle instances)
+#   are distinguished by naming variables chan and hchan.
+
+
+class _OrderedSet(collections.OrderedDict):
+    # A lazy implementation whose inheritance is not correct.
+    def add(self, m):
+        self[m] = True
+
+    def remove(self, m):
+        del self[m]
+
+    def pop(self, last=True):
+        k, v = self.popitem(last=last)
+        return k
 
 
 class _EditablePriorityQueue():
@@ -22,9 +41,9 @@ class _EditablePriorityQueue():
     def __contains__(self, item):
         return item in self._dic
 
-    def put(self, item, priority=0):
+    def put(self, item, extra_info=None, priority=0):
         ordinal = next(self._ordinal_generator)
-        entry = [priority, ordinal, item]
+        entry = [priority, ordinal, item, extra_info]
         self._dic[item] = entry
         heapq.heappush(self._heapqueue, entry)
 
@@ -33,145 +52,129 @@ class _EditablePriorityQueue():
             raise queue.Empty()
 
         while True:
-            item = heapq.heappop(self._heapqueue)[-1]
+            item, extra_info = heapq.heappop(self._heapqueue)[-2:]
             if item is not None:
                 break
         del self._dic[item]
-        return item
+        return item, extra_info
 
     def remove(self, item):
         if item in self._dic:
-            self._dic[item][-1] = None
+            entry = self._dic[item]
+            entry[-2] = entry[-1] = None
             del self._dic[item]
 
 
 class _Tasklet():
 
-    def __init__(self, tid, coroutine, priority=0):
+    def __init__(self, kernel, tid, coroutine, priority=0):
+        self.kernel = kernel
         self.tid = tid
         self.coroutine = coroutine
         self.priority = priority
 
-        self.retained_channels = {} # cid -> chan
-
-        self.send_waiting_chan = None
+        self.send_waiting_hchan = None
         self.send_waiting_ref = None
-        self.recv_waiting_chan = None
+        self.recv_waiting_hchan = None
         self.select_waiting_descs = None # list of (io, chan)
 
     def run(self, sendval=None):
         return self.coroutine.send(sendval)
 
-    def wait_on_send(self, chan, ref):
-        self.send_waiting_chan = chan
+    def wait_on_send(self, hchan, ref):
+        self.send_waiting_hchan = hchan
         self.send_waiting_ref = ref
 
-    def wait_on_recv(self, chan):
-        self.recv_waiting_chan = chan
-        chan.recv_queue[self.tid] = self
+    def wait_on_recv(self, hchan):
+        self.recv_waiting_hchan = hchan
+        hchan._chan.recv_queue.add(self)
 
-    def wait_on_select(self, kernel, descs):
+    def wait_on_select(self, descs):
         self.select_waiting_descs = []
-        for io, cid in descs:
-            chan = kernel.channels[cid]
-            self.select_waiting_descs.append((io, chan))
+        for io, hchan in descs:
+            self.select_waiting_descs.append((io, hchan))
             if io == Select.SEND:
-                chan.select_send_queue[self.tid] = self
+                hchan._chan.select_send_queue.add(self)
             else:
-                chan.select_recv_queue[self.tid] = self
-        kernel.select_queue[self.tid] = self
+                hchan._chan.select_recv_queue.add(self)
+        self.kernel.select_queue.add(self)
 
-    def clear_waits(self, kernel):
-        if self.tid in kernel.backlog_queue:
-            kernel.backlog_queue.remove(self.tid)
+    def clear_waits(self):
+        if self in self.kernel.backlog_queue:
+            self.kernel.backlog_queue.remove(self)
 
-        if self.send_waiting_chan is not None:
-            self.send_waiting_chan = None
+        if self.send_waiting_hchan is not None:
+            self.send_waiting_hchan = None
             self.send_waiting_ref = None
-        elif self.recv_waiting_chan is not None:
-            del self.recv_waiting_chan.recv_queue[self.tid]
-            self.recv_waiting_chan = None
+        elif self.recv_waiting_hchan is not None:
+            self.recv_waiting_hchan._chan.recv_queue.remove(self)
+            self.recv_waiting_hchan = None
         elif self.select_waiting_descs is not None:
-            for io, chan in self.select_waiting_descs:
+            for io, hchan in self.select_waiting_descs:
                 if io == Select.SEND:
-                    del chan.select_send_queue[self.tid]
+                    hchan._chan.select_send_queue.remove(self)
                 else:
-                    del chan.select_recv_queue[self.tid]
-            del kernel.select_queue[self.tid]
+                    hchan._chan.select_recv_queue.remove(self)
+            self.kernel.select_queue.remove(self)
             self.select_waiting_descs = None
-
-    def release_channels(self, kernel):
-        for chan in list(self.retained_channels.values()):
-            chan.release(kernel, self)
 
 
 class _Channel():
+    # See also ChannelHandle. ChannelHandle is not a mere wrapper to keep the
+    # _Channel implementation hidden from clients; it is a mechanism to tie
+    # the lifetime of the channel to the existence of tasklets referencing it.
+    # In general, holding a ChannelHandle is like holding a strong reference
+    # to a channel, whereas holding a _Channel does not prevent the
+    # corresponding ChannelHandle from being deallocated.
 
-    def __init__(self, cid):
+    def __init__(self, kernel, cid):
+        self.kernel = kernel
         self.cid = cid
-        self.refcount = 0
-        self.message_queue = collections.deque() # (sender_tid, message)
+        self.message_queue = collections.deque() # (sender, ref, message)
 
         self.message_ref_generator = itertools.count(1)
 
-        # There is no send_queue because blocking senders' tids are saved in
+        # There is no send_queue because blocking senders are saved in
         # message_queue.
-        self.recv_queue = collections.OrderedDict() # tid -> tasklet
-        self.select_send_queue = collections.OrderedDict() # tid -> tasklet
-        self.select_recv_queue = collections.OrderedDict() # tid -> tasklet
+        self.recv_queue = _OrderedSet() # tasklet
+        self.select_send_queue = _OrderedSet() # tasklet
+        self.select_recv_queue = _OrderedSet() # tasklet
 
-    def retain(self, kernel, tasklet):
-        if self.cid in tasklet.retained_channels:
-            warnings.warn(("tasklet {tid} retaining already-retained " +
-                           "channel {cid}").format(tid=tasklet.tid,
-                                                   cid=self.cid))
-        else:
-            self.refcount += 1
-            tasklet.retained_channels[self.cid] = self
+    def destroy(self, wref):
+        assert wref is self.handle
+        if len(self.message_queue):
+            warnings.warn("deallocating non-empty channel {cid}".
+                          format(cid=self.cid))
+            self.kernel.channels.remove(self)
+            # Note that channel may still remain in kernel.nonempty_channels.
 
-    def release(self, kernel, tasklet):
-        if self.cid in tasklet.retained_channels:
-            self.refcount -= 1
-            del tasklet.retained_channels[self.cid]
-        else:
-            warnings.warn(("tasklet {tid} releasing non-retained channel " +
-                           "{cid}").format(tid=tasklet.tid, cid=self.cid))
-
-        if self.refcount == 0:
-            if len(self.message_queue):
-                warnings.warn("deallocating non-empty channel {cid}".
-                              format(cid=self.cid))
-            del kernel.channels[self.cid]
-
-    def enqueue(self, kernel, message, sender_tid=None):
-        # We keep track of the sender's tid so that
+    def enqueue(self, message, sender=None):
+        # We keep track of the sender so that
         # 1) if the sender is blocking on the Send, it can be scheduled in
         #    the backlog once the message is received, and
         # 2) if the sender is waiting on the Send (while also being placed in
         #    the backlog queue), its waiting status can be cleared once the
         #    message is received.
         ref = next(self.message_ref_generator)
-        self.message_queue.append((sender_tid, ref, message))
-        kernel.nonempty_channels[self.cid] = self
+        self.message_queue.append((sender, ref, message))
+        self.kernel.nonempty_channels.add(self)
         return ref
 
-    def dequeue(self, kernel):
+    def dequeue(self):
         try:
-            sender_tid, ref, message = self.message_queue.popleft()
+            sender, ref, message = self.message_queue.popleft()
         except IndexError:
             raise queue.Empty
         else:
-            if sender_tid is not None:
-                if sender_tid in kernel.tasklets:
-                    sender = kernel.tasklets[sender_tid]
-                    # Check that the sender is still waiting on this send.
-                    if (self.cid == sender.send_waiting_chan and
-                        ref == sender.send_waiting_ref):
-                        sender.clear_waits(kernel)
-                    if sender_tid not in kernel.backlog_queue:
-                        kernel.place_in_backlog(sender_tid)
+            if sender is not None and sender in self.kernel.tasklets:
+                # Check that the sender is still waiting on this send.
+                if (self is sender.send_waiting_hchan._chan and
+                    ref == sender.send_waiting_ref):
+                    sender.clear_waits()
+                if sender not in self.kernel.backlog_queue:
+                    self.kernel.place_in_backlog(sender)
             if self.is_empty():
-                del kernel.nonempty_channels[self.cid]
+                self.kernel.nonempty_channels.remove(self)
             return message
 
     def is_empty(self):
@@ -183,68 +186,69 @@ class _Kernel():
         self.tid_generator = itertools.count(1)
         self.cid_generator = itertools.count(1)
 
-        self.tasklets = {} # tid -> tasklet
-        self.channels = {} # cid -> channel
+        self.tasklets = set()
+        self.channels = set()
 
-        self.nonempty_channels = collections.OrderedDict() # cid -> channel
-        self.select_queue = collections.OrderedDict() # tid -> tasklet
-        self.backlog_queue = _EditablePriorityQueue() # tid
-        self.async_queue = queue.Queue() # (cid, message)
+        self.nonempty_channels = _OrderedSet() # channel
+        self.select_queue = _OrderedSet() # tasklet
+        self.backlog_queue = _EditablePriorityQueue() # tasklet
+        self.async_queue = queue.Queue() # (hchan, message)
 
     def start_with_tasklet(self, coroutine, priority=0):
-        tid = self.new_tasklet(coroutine, priority)
-        self.place_in_backlog(tid)
+        tasklet = self.new_tasklet(coroutine, priority)
+        self.place_in_backlog(tasklet)
         self.runloop()
 
-    def post_async_message(self, cid, message):
-        self.async_queue.put((cid, message))
+    def post_async_message(self, hchan, message):
+        self.async_queue.put((hchan, message))
 
     def dispatch_async_messages(self):
         while True:
             try:
-                cid, message = self.async_queue.get_nowait()
+                hchan, message = self.async_queue.get_nowait()
             except queue.Empty:
                 break
             else:
-                self.channels[cid].enqueue(kernel, message)
+                hchan._chan.enqueue(message)
 
     def wait_for_async_message(self):
-        cid, message = self.async_queue.get()
-        self.channels[cid].enqueue(kernel, message)
+        hchan, message = self.async_queue.get()
+        hchan._chan.enqueue(message)
+
+    def new_channel_handle(self):
+        chan = _Channel(self, next(self.cid_generator))
+        self.channels.add(chan)
+        hchan = ChannelHandle(chan)
+        return hchan
 
     def new_tasklet(self, coroutine, priority):
-        tasklet = _Tasklet(next(self.tid_generator), coroutine, priority)
-        self.tasklets[tasklet.tid] = tasklet
-        return tasklet.tid
+        tasklet = _Tasklet(self, next(self.tid_generator), coroutine, priority)
+        self.tasklets.add(tasklet)
+        return tasklet
 
     def terminate_all_tasklets(self):
-        while self.tasklets:
-            tid, tasklet = self.tasklets.popitem()
+        while len(self.tasklets):
+            tasklet = self.tasklets.pop()
             tasklet.coroutine.close() # TODO Propagate exceptions, if any.
-            tasklet.release_channels(self)
 
-    def place_in_backlog(self, tid):
-        priority = self.tasklets[tid].priority
-        self.backlog_queue.put(tid, priority)
+    def place_in_backlog(self, tasklet, sendval=None):
+        self.backlog_queue.put(tasklet, sendval, tasklet.priority)
 
-    def run_tasklet(self, tid, sendval=None):
+    def run_tasklet(self, tasklet, sendval=None):
         while True: # Keep running while message chain continues.
-            tasklet = self.tasklets[tid]
             try:
                 kcall = tasklet.run(sendval)
             except StopIteration: # Tasklet terminated successfully.
-                tasklet.release_channels(self)
-                del self.tasklets[tid]
+                self.tasklets.remove(tasklet)
                 break
             except: # Tasklet terminated abnormally.
-                tasklet.release_channels(self)
-                del self.tasklets[tid]
+                self.tasklets.remove(tasklet)
                 self.terminate_all_tasklets()
                 raise
 
             if isinstance(kcall, _KernelCall):
-                tid, sendval = kcall(self, tid)
-                if tid is not None:
+                tasklet, sendval = kcall(self, tasklet)
+                if tasklet is not None:
                     continue
                 else:
                     break
@@ -253,53 +257,63 @@ class _Kernel():
                 if kcall is not None:
                     # This is a programming error.
                     warnings.warn(("tasklet {tid} yielded unrecognized " +
-                                   "value; discarding").format(tid=tid))
-                self.place_in_backlog(tid)
+                                   "value; discarding").
+                                  format(tid=tasklet.tid))
+                self.place_in_backlog(tasklet)
                 break
 
     def find_tasklet_to_run(self):
-        # Return (tid, send_val).
+        # Return (tasklet, send_val).
 
         # 1) Unblock where chan has queued messages and a tasklet is blocking
         #    on Recv for the chan, or on Select for RECV on the chan.
+
+        # Check each nonempty channel at most once, moving it to end of queue.
         for i in range(len(self.nonempty_channels)):
-            cid, chan = self.nonempty_channels.popitem(False)
-            self.nonempty_channels[cid] = chan
-            for tid, tasklet in chan.recv_queue.items():
-                message = chan.dequeue(kernel)
-                tasklet.clear_waits(self)
-                return tid, message
-            for tid, tasklet in chan.select_recv_queue.items():
-                tasklet.clear_waits(self)
-                return tid, (Select.RECV, cid)
+            chan = self.nonempty_channels.pop(last=False)
+            if chan not in self.channels:
+                continue
+            self.nonempty_channels.add(chan)
+
+            for tasklet in chan.recv_queue:
+                message = chan.dequeue()
+                tasklet.clear_waits()
+                return tasklet, message
+
+            for tasklet in chan.select_recv_queue:
+                tasklet.clear_waits()
+                return tasklet, (Select.RECV, chan.handle)
 
         # 2) Unblock a tasklet blocking on Select for SEND on a chan where
         #    another tasklet is blocking on Recv for the chan, or on Select
         #    for RECV on the chan.
+
+        # Check each tasklet at most once, moving it to end of queue.
         for i in range(len(self.select_queue)):
-            tid, tasklet = self.select_queue.popitem(False)
-            self.select_queue[tid] = tasklet
-            for cid in (cid for io, cid in tasklet.select_descs
-                        if io == Select.SEND):
-                chan = self.channels[cid]
+            tasklet = self.select_queue.pop(last=False)
+            self.select_queue.add(tasklet)
+
+            for hchan in (hchan for io, hchan in tasklet.select_waiting_descs
+                          if io == Select.SEND):
+                chan = hchan._chan
                 if len(chan.recv_queue) or len(chan.select_recv_queue):
-                    tasklet.clear_waits(self)
-                    return tid, (Select.SEND, cid)
+                    tasklet.clear_waits()
+                    return tasklet, (Select.SEND, hchan)
 
         # 3) Resume a tasklet from the backlog, if any.
         try:
-            tid = self.backlog_queue.get()
-            self.tasklets[tid].clear_waits(self)
-            return tid, None
+            tasklet, sendval = self.backlog_queue.get()
+            tasklet.clear_waits()
+            return tasklet, sendval
         except queue.Empty:
             return None, None
 
     def runloop(self):
-        while self.tasklets:
+        while len(self.tasklets):
             self.dispatch_async_messages()
-            tid, sendval = self.find_tasklet_to_run()
-            if tid is not None:
-                self.run_tasklet(tid, sendval)
+            tasklet, sendval = self.find_tasklet_to_run()
+            if tasklet is not None:
+                self.run_tasklet(tasklet, sendval)
             else:
                 self.wait_for_async_message()
 
@@ -307,12 +321,14 @@ class _Kernel():
 class _KernelCall():
     # Abstract base class.
 
-    def __call__(self, kernel, tid):
-        return tid, None # No-op.
+    def __call__(self, kernel, tasklet):
+        return tasklet, None # No-op.
 
 
 class Spawn(_KernelCall):
     """Start a new tasklet.
+
+    Context (almost always) switches.
     
     Usage: yield Spawn(tasklet[, priority]) # priority = 0 by default
 
@@ -325,109 +341,71 @@ class Spawn(_KernelCall):
         self.coroutine = coroutine
         self.priority = priority
 
-    def __call__(self, kernel, tid):
-        kernel.place_in_backlog(tid)
-        new_tid = kernel.new_tasklet(self.coroutine, self.priority)
-        return new_tid, None
+    def __call__(self, kernel, tasklet):
+        new_tasklet = kernel.new_tasklet(self.coroutine, self.priority)
+        kernel.place_in_backlog(tasklet, TaskletHandle(new_tasklet))
+        return new_tasklet, None
 
 
 class MakeChannel(_KernelCall):
 
     """Allocate a new channel.
 
-    Usage: cid = yield MakeChannel()
+    Context does not switch.
+
+    Usage: hchan = yield MakeChannel()
     """
 
-    def __call__(self, kernel, tid):
-        chan = _Channel(next(kernel.cid_generator))
-        chan.retain(kernel, kernel.tasklets[tid])
-        kernel.channels[chan.cid] = chan
-        return tid, chan.cid
+    def __call__(self, kernel, tasklet):
+        hchan = kernel.new_channel_handle()
+        return tasklet, hchan
 
 
 class MakeChannels(_KernelCall):
     """Allocate multiple channels at once.
+
+    Context does not switch.
+
+    Usage: hchans = yield MakeChannels(count)
     """
 
-    def __init__(self, n):
-        self.n = n
+    def __init__(self, count):
+        self.n = count
 
-    def __call__(self, kernel, tid):
-        tasklet = kernel.tasklets[tid]
-        ret = []
-        for i in range(n):
-            chan = _Channel(next(kernel.cid_generator))
-            chan.retain(kernel, tasklet)
-            kernel.channels[chan.cid] = chan
-            ret.append(chan.cid)
-        return tid, ret
-
-
-class RetainChannel(_KernelCall):
-    """Ensure that a channel is available for the lifetime of the tasklet.
-
-    Usage: yield RetainChannel(cid)
-
-    This should be called on channel ids passed from other tasklets, to prevent
-    the channel from being deallocated.
-    """
-
-    def __init__(self, cid):
-        self.cid = cid
-
-    def __call__(self, kernel, tid):
-        chan = kernel.channels[self.cid]
-        tasklet = kernel.tasklets[tid]
-        chan.retain(kernel, tasklet)
-        return tid, None
-
-
-class ReleaseChannel(_KernelCall):
-    """Undo the effect of RetainChannel.
-
-    Usage: yield ReleaseChannel(cid)
-
-    This call should be used to release channels if many channels are created
-    or used by a long-running tasklet. Normally, it is not necessary to
-    explicitly release channels, as all channels retained by a tasklet are
-    automatically released when the tasklet exits.
-    """
-
-    def __init__(self, cid):
-        self.cid = cid
-
-    def __call__(self, kernel, tid):
-        chan = kernel.channels[self.cid]
-        tasklet = kernel.tasklets[tid]
-        chan.release(kernel, tasklet)
-        return tid, None
+    def __call__(self, kernel, tasklet):
+        hchans = [kernel.new_channel_handle() for i in range(n)]
+        return tasklet, hchans
 
 
 class AsyncSender(_KernelCall):
     """Return a function to send asynchronous messages to a channel.
 
-    Usage: sender = yield AsyncSender(cid)
+    Context does not switch.
+
+    Usage: sender = yield AsyncSender(hchan)
            sender(message)
 
     The returned callable (sender) can be called from any thread.
     """
 
-    def __init__(self, cid):
-        self.cid = cid
+    def __init__(self, hchan):
+        self.hchan = hchan
 
-    def __call__(self, kernel, tid):
-        meth = functools.partial(kernel.post_async_message, self.cid)
-        return tid, meth
+    def __call__(self, kernel, tasklet):
+        meth = functools.partial(kernel.post_async_message, self.hchan)
+        return tasklet, meth
 
 
 class Select(_KernelCall):
 
     """Multiplex Send/Recv.
 
-    Usage: io, cid = yield Select(descs[, block]) # block = True by default
+    Context may switch.
 
-    We shall call the pair (io, cid) a descriptor if io is either Select.SEND
-    or Select.RECV and cid is a channel id.
+    Usage: io, hchan = yield Select(descs[, block]) # block = True by default
+
+    We shall call the pair (io, hchan) a descriptor if io is either
+    Select.SEND or Select.RECV and hchan is a channel handle.
 
     Select searches the given list of descriptors (desc) for one that is
     _ready_. If more than one descriptor is ready, the first one is returned
@@ -446,40 +424,41 @@ class Select(_KernelCall):
         self.descs = descs
         self.should_block = block
 
-    def __call__(self, kernel, tid):
-        tasklets_waiting_to_send = collections.OrderedDict()
+    def __call__(self, kernel, tasklet):
+        tasklets_waiting_to_send = []
 
-        for io, cid in self.descs:
-            chan = kernel.channels[cid]
+        for io, hchan in self.descs:
+            chan = hchan._chan
 
             if io == self.SEND:
                 # If a tasklet is blocking on Recv or Select(Recv) for the
                 # channel, the current channel is ready to Send. 
                 if len(chan.recv_queue) or len(chan.select_recv_queue):
-                    return tid, (self.SEND, cid)
+                    return tasklet, (self.SEND, hchan)
 
             else: # io == self.RECV:
                 # If a message is available, the current channel is ready to
                 # Recv.
                 if not chan.is_empty():
-                    return tid, (self.RECV, cid)
+                    return tasklet, (self.RECV, hchan)
 
                 # Otherwise, if there is a tasklet blocking on Select(Send),
                 # we could switch to that tasklet if no other descriptor is
                 # ready.
-                for s_tid, s_tasklet in chan.select_send_queue:
-                    tasklets_waiting_to_send[s_tid] = s_tasklet
+                for s_tasklet in chan.select_send_queue:
+                    tasklets_waiting_to_send.append(s_tasklet)
                     break
 
         # None of the descriptors were ready.
-        kernel.tasklets[tid].wait_on_select(kernel, self.descs)
+        tasklet.wait_on_select(self.descs)
         if not self.should_block:
-            kernel.place_in_backlog(tid)
+            kernel.place_in_backlog(tasklet)
 
         # But we switch to a prospective sender if there were any.
-        for s_tid, s_tasklet in tasklets_waiting_to_send:
-            s_tasklet.clear_waits(kernel)
-            return s_tid, (self.SEND, cid) # from blocked Select()
+        for s_tasklet in tasklets_waiting_to_send:
+            s_tasklet.clear_waits()
+            # from blocked Select()
+            return s_tasklet, (self.SEND, s_tasklet.send_waiting_hchan)
 
         # All concerned tasklets are suspended.
         return None, None
@@ -488,37 +467,40 @@ class Select(_KernelCall):
 class Send(_KernelCall):
 
     """Send message through channel.
+
+    Context may switch.
     
-    Usage: yield Send(cid, message[, block]) # block = True by default
+    Usage: yield Send(hchan, message[, block]) # block = True by default
     """
 
-    def __init__(self, cid, message, block=True):
-        self.cid = cid
+    def __init__(self, hchan, message, block=True):
+        self.hchan = hchan
         self.message = message
         self.should_block = block
 
-    def __call__(self, kernel, tid):
-        chan = kernel.channels[self.cid]
+    def __call__(self, kernel, tasklet):
+        chan = self.hchan._chan
 
         # If a tasklet is blocking on a Recv, unblock and switch to it, leaving
         # the current tasklet in the backlog.
-        for r_tid, r_tasklet in chan.recv_queue.items():
-            kernel.place_in_backlog(tid)
-            r_tasklet.clear_waits(kernel)
-            return r_tid, self.message # Return from Recv().
+        for r_tasklet in chan.recv_queue:
+            kernel.place_in_backlog(tasklet)
+            r_tasklet.clear_waits()
+            return r_tasklet, self.message # Return from Recv().
 
         # Otherwise, enqueue the message in the channel. The current tasklet
         # either blocks or is placed at the back of the backlog queue.
-        ref = chan.enqueue(kernel, self.message, tid)
-        kernel.tasklets[tid].wait_on_send(chan, ref)
+        ref = chan.enqueue(self.message, tasklet)
+        tasklet.wait_on_send(self.hchan, ref)
         if not self.should_block:
-            kernel.place_in_backlog(tid)
+            kernel.place_in_backlog(tasklet)
 
         # If there is a tasklet blocking on Select to Recv from the channel,
         # it is unblocked.
-        for s_tid, s_tasklet in chan.select_recv_queue.items():
-            s_tasklet.clear_waits(kernel)
-            return s_tid, (Select.RECV, self.cid) # Return from Select().
+        for s_tasklet in chan.select_recv_queue:
+            s_tasklet.clear_waits()
+            # Return from Select():
+            return s_tasklet, (Select.RECV, self.hchan)
 
         # Otherwise, all concerned tasklets have been suspended.
         return None, None
@@ -527,36 +509,70 @@ class Send(_KernelCall):
 class Recv(_KernelCall):
 
     """Receive message from channel.
+
+    Context may switch.
     
-    Usage: message = yield Recv(cid[, block]) # block = True by default
+    Usage: message = yield Recv(hchan[, block]) # block = True by default
     """
 
-    def __init__(self, cid, block=True):
-        self.cid = cid
+    def __init__(self, hchan, block=True):
+        self.hchan = hchan
         self.should_block = block
 
-    def __call__(self, kernel, tid):
-        chan = kernel.channels[self.cid]
-
+    def __call__(self, kernel, tasklet):
         try:
             # If a message is available, return it.
-            message = chan.dequeue(kernel)
-            return tid, message # Return from Recv().
+            message = self.hchan._chan.dequeue()
+            return tasklet, message # Return from Recv().
 
         except queue.Empty:
             # Otherwise, block or place in backlog.
-            kernel.tasklets[tid].wait_on_recv(chan)
+            tasklet.wait_on_recv(self.hchan)
             if self.should_block:
                 # If there is a tasklet blocking on Select to Send to the
                 # channel, it is unblocked.
-                for s_tid, s_tasklet in chan.select_send_queue.items():
-                    s_tasklet.clear_waits(kernel)
-                    return s_tid, (Select.SEND, self.cid) # from Select().
+                for s_tasklet in self.hchan._chan.select_send_queue:
+                    s_tasklet.clear_waits()
+                    # from Select():
+                    return s_tasklet, (Select.SEND, self.hchan)
             else:
-                kernel.place_in_backlog(tid)
+                kernel.place_in_backlog(tasklet)
 
             # Otherwise, all concerned tasklets have been suspended.
             return None, None
+
+
+class TaskletHandle():
+    """A handle for the opaque tasklet object.
+    
+    TaskletHandle objects may be passed between tasklets, via Send() or
+    Spawn().
+    """
+
+    def __init__(self, _tasklet):
+        self._tasklet = _tasklet
+
+    @property
+    def tid(self):
+        """The tasklet's unique id."""
+        return self._tasklet.tid
+
+
+class ChannelHandle():
+    """A handle for the opaque channel object.
+    
+    ChannelHandle objects may be passed between tasklets, via Send() or
+    Spawn().
+    """
+
+    def __init__(self, _chan):
+        self._chan = _chan
+        _chan.handle = weakref.ref(self, _chan.destroy)
+
+    @property
+    def cid(self):
+        """The channel's unique id."""
+        return self._chan.cid
 
 
 def start_with_tasklet(tasklet, priority=0):
