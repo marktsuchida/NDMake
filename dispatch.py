@@ -256,9 +256,8 @@ class _Kernel():
             else: # Yielded a non-command. Yield to other tasklets.
                 if kcall is not None:
                     # This is a programming error.
-                    warnings.warn(("tasklet {tid} yielded unrecognized " +
-                                   "value; discarding").
-                                  format(tid=tasklet.tid))
+                    warnings.warn(("tasklet {tid} yielded unrecognized value; "
+                                   "discarding").format(tid=tasklet.tid))
                 self.place_in_backlog(tasklet)
                 break
 
