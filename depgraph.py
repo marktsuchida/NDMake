@@ -1,4 +1,5 @@
 import itertools
+import collections
 from collections import OrderedDict
 import shlex
 import template
@@ -8,8 +9,8 @@ import template
 # any runtime state, but some methods of the model objects do act on runtime
 # context. Such runtime data is stored in a DynamicGraph instance, which is
 # passed around to all runtime methods. In other words, double dispatch is used
-# with the model object as primary target and runtime context as secondary
-# target.
+# with the model object as primary target and runtime context (dynamic_graph)
+# as secondary target.
 
 # A documentation-only decorator.
 def runtime(method): return method
@@ -136,8 +137,8 @@ class StaticGraph:
 
         Includes isolated vertices, if any.
         """
-        return list(self._vertex_id_map[id]
-                    for id in _id_vertex_map.keys()
+        return list(self._id_vertex_map[id]
+                    for id in self._id_vertex_map.keys()
                     if not len(self._parents.setdefault(id, set())))
 
     def sinks(self):
@@ -145,28 +146,57 @@ class StaticGraph:
 
         Includes isolated vertices, if any.
         """
-        return list(self._vertex_id_map[id]
-                    for id in _id_vertex_map.keys()
+        return list(self._id_vertex_map[id]
+                    for id in self._id_vertex_map.keys()
                     if not len(self._children.setdefault(id, set())))
 
 
 class DynamicGraph:
-    def __init__(self, static_graph, runtime_proxy_factory=lambda x: x):
+    def __init__(self, static_graph, runtime_proxy_factory=lambda x, y: x):
         self.static_graph = static_graph
-        self.runtime_proxy_factory = runtime_proxy_factory
+
+        if isinstance(runtime_proxy_factory, collections.Mapping):
+            def factory(graph, object):
+                for type_, proxy_type in runtime_proxy_factory.items():
+                    if isinstance(object, type_):
+                        return proxy_type(graph, object)
+                if Ellipsis in runtime_proxy_factory:
+                    return runtime_proxy_factory[Ellipsis](graph, object)
+                return object
+        else:
+            factory = runtime_proxy_factory
+        self.runtime_proxy_factory = factory
+
         self.runtime_proxies = {} # object -> proxy
 
-    _forwarded_attrs = (dimensions, templateset, parents_of, children_of,
-                        sources, sinks)
-
+    _forwarded_attrs = ("dimensions", "templateset",)
     def __getattr__(self, name):
         if name in _forwarded_attrs:
             return getattr(self.static_graph, name)
 
-    def __setattr__(self, name, value):
-        if name in _forwarded_attrs:
-            assert False, ("attempt to set static graph attribute on "
-                           "dynamic graph")
+    def vertex_by_name(self, name, type_):
+        vertex = self.static_graph.vertex_by_name(name, type_)
+        return self.runtime(vertex)
+
+    def parents_of(self, vertex):
+        if isinstance(vertex, RuntimeProxy):
+            vertex = vertex.static_object
+        parents = self.static_graph.parents_of(vertex)
+        return list(self.runtime(v) for v in parents)
+
+    def children_of(self, vertex):
+        if isinstance(vertex, RuntimeProxy):
+            vertex = vertex.static_object
+        children = self.static_graph.children_of(vertex)
+        return list(self.runtime(v) for v in children)
+
+    def sources(self):
+        sources = self.static_graph.sources()
+        return list(self.runtime(v) for v in sources)
+
+    def sinks(self):
+        sinks = self.static_graph.sinks()
+        return list(self.runtime(v) for v in sinks)
 
     def runtime(self, object):
         # Return the runtime proxy object for the given object.
@@ -185,11 +215,26 @@ class DynamicGraph:
 #
 
 class RuntimeProxy:
-    def __init__(self, static_object):
+    # We keep this simple, rather than dealing with various edge cases upfront.
+
+    def __init__(self, dynamic_graph, static_object):
+        self.graph = dynamic_graph
         self.static_object = static_object
+
+    def __str__(self):
+        return "<{} {}>".format(self.__class__.__name__,
+                                str(self.static_object))
 
     def __getattr__(self, name):
         return getattr(self.static_object, name)
+
+
+class VertexStateRuntime(RuntimeProxy):
+    def __init__(self, graph, vertex):
+        super().__init__(graph, vertex)
+
+        self.mtime = None
+        self.is_up_to_date = None # None = unknown; False = known out of date.
 
 
 #
@@ -268,7 +313,7 @@ class DomainSequenceSource(Spatial):
         return self._space
 
     @runtime
-    def sequence(self, context, parent_point=Ellipsis):
+    def sequence(self, dynamic_graph, parent_point=Ellipsis):
         assert False, "abstract method call"
 
 class EnumeratedDomainSequenceSource(DomainSequenceSource):
@@ -277,16 +322,16 @@ class EnumeratedDomainSequenceSource(DomainSequenceSource):
         self.values = values # Surveyer or template.
 
     @runtime
-    def sequence(self, context, parent_point=Ellipsis):
+    def sequence(self, dynamic_graph, parent_point=Ellipsis):
         if isinstance(self, values, DomainSurveyer):
             # Dynamic domain.
             surveyer = self.values
-            return surveyer.values(context, parent_point)
+            return surveyer.values(dynamic_graph, parent_point)
 
         # Static domain.
         template = self.values
         dict_ = self.space.point_to_dict(parent_point)
-        filename_expander = self.space.filename_expander(context)
+        filename_expander = self.space.filename_expander(dynamic_graph)
         rendered_values = template.render(dict_, filename_expander)
         return shlex.split(rendered_values)
 
@@ -296,11 +341,11 @@ class RangeDomainSequenceSource(DomainSequenceSource):
         self.rangeargs = rangeargs # Surveyer or template.
 
     @runtime
-    def sequence(self, context, parent_point=Ellipsis):
+    def sequence(self, dynamic_graph, parent_point=Ellipsis):
         if isinstance(self.rangeargs, DomainSurveyer):
             # Dynamic domain.
             surveyer = self.rangeargs
-            values = surveyer.values(context, parent_point)
+            values = surveyer.values(dynamic_graph, parent_point)
             if isinstance(values, range):
                 return values
             values = sorted(int(v) for v in values)
@@ -324,7 +369,7 @@ class RangeDomainSequenceSource(DomainSequenceSource):
         # Static domain.
         template = self.values
         dict_ = self.space.point_to_dict(parent_point)
-        filename_expander = self.space.filename_expander(context)
+        filename_expander = self.space.filename_expander(dynamic_graph)
         rendered_values = template.render(dict_, filename_expander)
         rangeargs = tuple(int(a) for a in rendered_values.split())
         if len(rangeargs) not in range(1, 4):
@@ -351,11 +396,11 @@ class DomainSurveyer(Vertex):
         return self._space
 
     @runtime
-    def compute(self, context, parent_point=Ellipsis):
+    def compute(self, dynamic_graph, parent_point=Ellipsis):
         assert False, "abstract method call"
 
     @runtime
-    def values(self, context, parent_point=Ellipsis):
+    def values(self, dynamic_graph, parent_point=Ellipsis):
         # Return a range or a list.
         assert False, "abstract method call"
 
@@ -388,13 +433,13 @@ class Domain(Spatial):
         return self._space
 
     @runtime
-    def iterate(self, context, parent_point=Ellipsis):
+    def iterate(self, dynamic_graph, parent_point=Ellipsis):
         assert False, "abstract method call"
 
 class FullDomain(Domain):
     @runtime
-    def iterate(self, context, parent_point=Ellipsis):
-        return iter(self.seq_source.sequence(context, parent_point))
+    def iterate(self, dynamic_graph, parent_point=Ellipsis):
+        return iter(self.seq_source.sequence(dynamic_graph, parent_point))
 
 class Subdomain(Domain):
     def __init__(self, *args, **kwargs):
@@ -410,13 +455,13 @@ class Subdomain(Domain):
 
 class SubsetDomain(Subdomain):
     @runtime
-    def iterate(self, context, parent_point=Ellipsis):
-        parent_seq = self.full_domain.seq_source.sequence(context,
+    def iterate(self, dynamic_graph, parent_point=Ellipsis):
+        parent_seq = self.full_domain.seq_source.sequence(dynamic_graph,
                                                           parent_point)
         if not isinstance(parent_seq, range):
             parent_seq = frozenset(parent_seq) # Speed up.
 
-        for value in self.seq_source.sequence(context, parent_point):
+        for value in self.seq_source.sequence(dynamic_graph, parent_point):
             if value not in parent_seq:
                 raise ValueError("value generated by subset domain surveyer "
                                  "not in full domain of dimension")
@@ -424,8 +469,8 @@ class SubsetDomain(Subdomain):
 
 class SliceDomain(Subdomain):
     @runtime
-    def iterate(self, context, parent_point=Ellipsis):
-        slicerange = self.seq_source.sequence(context, parent_point)
+    def iterate(self, dynamic_graph, parent_point=Ellipsis):
+        slicerange = self.seq_source.sequence(dynamic_graph, parent_point)
         assert isinstance(slicerange, range)
 
         if len(slicerange) == 0:
@@ -437,7 +482,7 @@ class SliceDomain(Subdomain):
             slice = slice(slicerange[0], slicerange[-1] + 1,
                           slicerange[1] - slicerange[0])
 
-        parent_seq = self.full_domain.seq_source.sequence(context,
+        parent_seq = self.full_domain.seq_source.sequence(dynamic_graph,
                                                           parent_point)
         return iter(parent_seq[slice])
 
@@ -468,7 +513,7 @@ class Space:
         return len(self.domains)
 
     @runtime
-    def iterate(self, context, parent_point=Ellipsis):
+    def iterate(self, dynamic_graph, parent_point=Ellipsis):
         # Yield all points of the space in order.
         if not len(self.domains):
             yield Ellipsis
@@ -477,16 +522,17 @@ class Space:
 
         if isinstance(dom, tuple):
             keys = tuple(dim + "." + d.name for d in dom)
-            values = zip(*(d.iterate(context, parent_point) for d in dom))
+            values = zip(*(d.iterate(dynamic_graph, parent_point)
+                           for d in dom))
         else:
             keys = (dim,)
-            values = zip(dim.iterate(context, parent_point))
+            values = zip(dim.iterate(dynamic_graph, parent_point))
 
         for coordinates in values:
             first_dim_point = list((k, v) for k, v in zip(keys, coordinates))
 
             rest_space = Space(self.domains.items()[1:])
-            for rest_dims_point in rest_space.iterate(context,
+            for rest_dims_point in rest_space.iterate(dynamic_graph,
                                                       first_dim_point):
                 if rest_dims_point is Ellipsis:
                     yield first_dim_point

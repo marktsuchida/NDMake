@@ -12,6 +12,14 @@ import weakref
 __doc__ = """Cooperative multitasking in pure Python, using coroutines."""
 
 
+DEBUG = True
+if DEBUG:
+    def dprint(*args):
+        print("dispatch: {}:".format(args[0]), *args[1:])
+else:
+    def dprint(*args): pass
+
+
 # Coding conventions
 # - Channels (_Channel instances) and channel handles (ChannelHandle instances)
 #   are distinguished by naming variables chan and hchan.
@@ -37,6 +45,12 @@ class _EditablePriorityQueue():
         self._heapqueue = []
         self._dic = {} # Keep track of queue entries.
         self._ordinal_generator = itertools.count(0)
+
+    def __str__(self):
+        return repr(self)
+
+    def __repr__(self):
+        return "_EditablePriorityQueue({})".format(repr(self._heapqueue))
 
     def __contains__(self, item):
         return item in self._dic
@@ -72,11 +86,18 @@ class _Tasklet():
         self.tid = tid
         self.coroutine = coroutine
         self.priority = priority
+        self.is_daemon = False
 
         self.send_waiting_hchan = None
         self.send_waiting_ref = None
         self.recv_waiting_hchan = None
         self.select_waiting_descs = None # list of (io, chan)
+
+    def __str__(self):
+        return repr(self)
+
+    def __repr__(self):
+        return "<Tasklet {} {}>".format(self.tid, self.coroutine.__name__)
 
     def run(self, sendval=None):
         return self.coroutine.send(sendval)
@@ -140,6 +161,12 @@ class _Channel():
         self.select_send_queue = _OrderedSet() # tasklet
         self.select_recv_queue = _OrderedSet() # tasklet
 
+    def __str__(self):
+        return repr(self)
+
+    def __repr__(self):
+        return "<Channel {}>".format(self.cid)
+
     def destroy(self, wref):
         assert wref is self.handle
         if len(self.message_queue):
@@ -168,11 +195,12 @@ class _Channel():
         else:
             if sender is not None and sender in self.kernel.tasklets:
                 # Check that the sender is still waiting on this send.
-                if (self is sender.send_waiting_hchan._chan and
+                if (sender.send_waiting_hchan is not None and
+                    self is sender.send_waiting_hchan._chan and
                     ref == sender.send_waiting_ref):
                     sender.clear_waits()
-                if sender not in self.kernel.backlog_queue:
-                    self.kernel.place_in_backlog(sender)
+                    if sender not in self.kernel.backlog_queue:
+                        self.kernel.place_in_backlog(sender)
             if self.is_empty():
                 self.kernel.nonempty_channels.remove(self)
             return message
@@ -183,7 +211,7 @@ class _Channel():
 
 class _Kernel():
     def __init__(self):
-        self.tid_generator = itertools.count(1)
+        self.tid_generator = itertools.count(0)
         self.cid_generator = itertools.count(1)
 
         self.tasklets = set()
@@ -193,6 +221,8 @@ class _Kernel():
         self.select_queue = _OrderedSet() # tasklet
         self.backlog_queue = _EditablePriorityQueue() # tasklet
         self.async_queue = queue.Queue() # (hchan, message)
+
+        self.tid0_exited = False
 
     def start_with_tasklet(self, coroutine, priority=0):
         tasklet = self.new_tasklet(coroutine, priority)
@@ -209,10 +239,12 @@ class _Kernel():
             except queue.Empty:
                 break
             else:
+                dprint(hchan._chan, "async send", message)
                 hchan._chan.enqueue(message)
 
     def wait_for_async_message(self):
         hchan, message = self.async_queue.get()
+        dprint(hchan._chan, "async send", message)
         hchan._chan.enqueue(message)
 
     def new_channel_handle(self):
@@ -226,10 +258,19 @@ class _Kernel():
         self.tasklets.add(tasklet)
         return tasklet
 
-    def terminate_all_tasklets(self):
-        while len(self.tasklets):
-            tasklet = self.tasklets.pop()
-            tasklet.coroutine.close() # TODO Propagate exceptions, if any.
+    def terminate(self, tasklet):
+        dprint(tasklet, "terminating")
+        self.tasklets.remove(tasklet)
+        tasklet.coroutine.close() # XXX Exceptions? Ignore for now.
+
+    def terminate_all(self):
+        for tasklet in list(self.tasklets):
+            self.terminate(tasklet)
+
+    def terminate_daemons(self):
+        for tasklet in list(self.tasklets):
+            if tasklet.is_daemon:
+                self.terminate(tasklet)
 
     def place_in_backlog(self, tasklet, sendval=None):
         self.backlog_queue.put(tasklet, sendval, tasklet.priority)
@@ -239,11 +280,15 @@ class _Kernel():
             try:
                 kcall = tasklet.run(sendval)
             except StopIteration: # Tasklet terminated successfully.
+                dprint(tasklet, "exited")
                 self.tasklets.remove(tasklet)
+                if tasklet.tid == 0: # Initial tasklet.
+                    self.tid0_exited = True
+                    self.terminate_daemons()
                 break
             except: # Tasklet terminated abnormally.
                 self.tasklets.remove(tasklet)
-                self.terminate_all_tasklets()
+                self.terminate_all()
                 raise
 
             if isinstance(kcall, _KernelCall):
@@ -276,6 +321,7 @@ class _Kernel():
 
             for tasklet in chan.recv_queue:
                 message = chan.dequeue()
+                dprint(chan, tasklet, "received", message)
                 tasklet.clear_waits()
                 return tasklet, message
 
@@ -316,6 +362,10 @@ class _Kernel():
             else:
                 self.wait_for_async_message()
 
+        dprint("kernel", "exiting; {} tasklets, {} channels".
+               format(next(self.tid_generator),
+                      next(self.cid_generator) - 1))
+
 
 class _KernelCall():
     # Abstract base class.
@@ -342,6 +392,7 @@ class Spawn(_KernelCall):
 
     def __call__(self, kernel, tasklet):
         new_tasklet = kernel.new_tasklet(self.coroutine, self.priority)
+        dprint(new_tasklet, "spawned by", tasklet)
         kernel.place_in_backlog(tasklet, TaskletHandle(new_tasklet))
         return new_tasklet, None
 
@@ -490,6 +541,7 @@ class Send(_KernelCall):
         # Otherwise, enqueue the message in the channel. The current tasklet
         # either blocks or is placed at the back of the backlog queue.
         ref = chan.enqueue(self.message, tasklet)
+        dprint(chan, tasklet, "sent", self.message)
         tasklet.wait_on_send(self.hchan, ref)
         if not self.should_block:
             kernel.place_in_backlog(tasklet)
@@ -522,6 +574,7 @@ class Recv(_KernelCall):
         try:
             # If a message is available, return it.
             message = self.hchan._chan.dequeue()
+            dprint(self.hchan._chan, tasklet, "received", message)
             return tasklet, message # Return from Recv().
 
         except queue.Empty:
@@ -539,6 +592,47 @@ class Recv(_KernelCall):
 
             # Otherwise, all concerned tasklets have been suspended.
             return None, None
+
+
+class GetTid(_KernelCall):
+
+    """Get the current tasklet id.
+
+    Context does not switch.
+
+    Usage: tid = yield GetTid()
+    """
+
+    def __init__(self): pass
+
+    def __call__(self, kernel, tasklet):
+        tid = tasklet.tid
+        return tasklet, tid
+
+
+class SetDaemon(_KernelCall):
+
+    """Set the daemon flag for the current tasklet.
+
+    Tasklets whose daemon flag is set will be killed when the main (initial)
+    tasklet exits. If SetDaemon(True) is called when the main tasklet has
+    already exited, the calling tasklet is immediately terminated.
+
+    Context does not switch.
+
+    Usage: yield SetDaemon(flag) # or
+           yield SetDaemon() # Same as flag = True.
+    """
+
+    def __init__(self, make_daemon=True):
+        self.flag = make_daemon
+
+    def __call__(self, kernel, tasklet):
+        tasklet.is_daemon = self.flag
+        if kernel.tid0_exited:
+            kernel.terminate(tasklet)
+            return None, None
+        return tasklet, None
 
 
 class TaskletHandle():
@@ -567,6 +661,12 @@ class ChannelHandle():
     def __init__(self, _chan):
         self._chan = _chan
         _chan.handle = weakref.ref(self, _chan.destroy)
+
+    def __str__(self):
+        return repr(self)
+
+    def __repr__(self):
+        return "<ChannelHandle {}>".format(self._chan.cid)
 
     @property
     def cid(self):
