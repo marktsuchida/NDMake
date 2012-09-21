@@ -77,7 +77,7 @@ range: {{g.moving_range[EXPERIMENT]}}
 
 [compute transform_refframe]
 dimensions: FRAME.moving
-parallel: 100%
+parallel: yes
 input: input_tifs
 command: {% set bounds = g.bounds[EXPERIMENT] -%}
  {% set rel_frame = FRAME - g.moving_range[EXPERIMENT][0] -%}
@@ -139,7 +139,7 @@ filename: compute/iter_field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}/field{{"%02
 
 [compute get_final_field]
 dimensions: FRAME.selection
-parallel: 100%
+parallel: yes
 input: iter_defo_field
 command: cp {{iter_defo_field[-1]}} {{unmasked_field}}
 
@@ -151,7 +151,7 @@ filename: compute/field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
 [compute deform_moving_image]
 dimensions: FRAME.selection|after
 input: unmasked_field glass_refframe
-parallel: 100%
+parallel: yes
 command: python apply_field.py \
      {{filename("unmasked_field", FRAME=FRAME.selection}} \
      {{filename("glass_refframe", FRAME=FRAME.after)}} \
@@ -185,7 +185,7 @@ filename: compute/field_masked/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
 [compute convert_registered]
 dimensions: FRAME.selection
 input: registered_image
-parallel: 100%
+parallel: yes
 command: python meta2tif.py {{registered_image}} {{registered_tif}}
 
 [dataset registered_tif]
@@ -196,7 +196,7 @@ filename: compute/registered/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.tif
 [compute plot_displacement]
 dimensions: FRAME.selection
 input glass_refframe deformation_field
-parallel: 100%
+parallel: yes
 command: python plot_field.py --image={{glass_refframe}} \
      --title='Per-frame, {{EXPERIMENT}}: {{"% 4d"|format(FRAME)}}' \
      --vectors \

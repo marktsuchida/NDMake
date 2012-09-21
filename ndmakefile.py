@@ -219,10 +219,11 @@ def read_compute_section(graph, name, items):
 
     tmpl = graph.templateset.new_template(name, items.pop("command"))
     
-    parallel = items.pop("parallel", "").lower()
-    if parallel in ("y", "yes", "t", "true"):
+    parallel = items.pop("parallel", "no")
+    # Note: we intensionally disallow YES, Yes, True, true, y, Y, t, T, etc.
+    if parallel == "yes":
         parallel = True # Same as 1.0.
-    elif parallel in ("", "n", "no", "f", "false"):
+    elif parallel == "no":
         parallel = False # Serial execution.
     elif parallel[-1] == "%":
         parallel = float(parallel[:-1]) / 100.0 # Fraction of core count.

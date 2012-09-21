@@ -268,6 +268,12 @@ class Vertex(Spatial):
         if isinstance(self, DomainSurveyer):
             return DomainSurveyer
 
+    def is_locally_up_to_date(self, dynamic_graph):
+        assert False, "abstract method call"
+
+    def compute(self, dynamic_graph):
+        assert False, "abstract method call"
+
 
 class VertexPlaceholder(Vertex):
     def __init__(self, name, type_):
@@ -388,25 +394,19 @@ class RangeDomainSequenceSource(DomainSequenceSource):
 
 class DomainSurveyer(Vertex):
     def __init__(self, name, parent_space):
-        super().__init__(self, name)
+        super().__init__(name)
         self._space = parent_space
 
     @property
     def space(self):
         return self._space
 
-    @runtime
-    def compute(self, dynamic_graph, parent_point=Ellipsis):
-        assert False, "abstract method call"
-
-    @runtime
-    def values(self, dynamic_graph, parent_point=Ellipsis):
-        # Return a range or a list.
-        assert False, "abstract method call"
 
 class RangeCommandDomainSurveyer(DomainSurveyer):
     def __init__(self, name, parent_space, command_template):
-        pass
+        super().__init__(name, parent_space)
+        self.command_template = command_template
+
 
 class PatternDomainSurveyer(DomainSurveyer):
     pass
@@ -563,9 +563,21 @@ class Space:
 
 class Dataset(Vertex):
     def __init__(self, name, space, filename_template):
-        self.name = name
+        super().__init__(name)
+
+    def is_locally_up_to_date(self, dynamic_graph):
+        # In case the dataset is not produced by a computation, we check that
+        # all files are present.
+        return self.mtime() > 0
 
 class Computation(Vertex):
     def __init__(self, name, space, command_template, parallel=False):
-        self.name = name
+        super().__init__(name)
+
+    def is_locally_up_to_date(self, dynamic_graph):
+        newest_input_mtime = max(input.mtime() for input
+                                 in dynamic_graph.parents_of(self))
+        oldest_output_ntime = min(output.mtime() for output
+                                  in dynamic_graph.children_of(self))
+        return newest_input_mtime < oldest_output_ntime
 

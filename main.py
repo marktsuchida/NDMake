@@ -8,6 +8,6 @@ import sys
 graph = depgraph.StaticGraph()
 ndmakefile.read_depgraph(graph, sys.argv[1])
 
-update = update.Update(graph, lambda x: x)
+update = update.Update(graph, update.isuptodate)
 dispatch.start_with_tasklet(update.update_sinks())
 

@@ -65,7 +65,6 @@ def demultiplex(trigger_chans, notification_chan, signal=Ellipsis):
     yield dispatch.Send(notification_chan, signal)
 
 
-
 class VertexUpdateRuntime(depgraph.VertexStateRuntime):
     def __init__(self, graph, vertex):
         super().__init__(graph, vertex)
@@ -75,12 +74,12 @@ class VertexUpdateRuntime(depgraph.VertexStateRuntime):
 
 
 class Update:
-    def __init__(self, graph, action):
+    def __init__(self, graph, action_factory):
         proxy_map = OrderedDict()
         proxy_map[depgraph.Vertex] = VertexUpdateRuntime
         proxy_map[...] = depgraph.RuntimeProxy
         self.graph = depgraph.DynamicGraph(graph, proxy_map)
-        self.action = action
+        self.action_factory = action_factory # Coroutine function.
 
     @dispatch.subtasklet
     def _get_notification_request_chan(self, vertex):
@@ -145,7 +144,11 @@ class Update:
         # Perform the update action.
         dprint("tid {}".format((yield dispatch.GetTid())),
                "visiting", vertex)
-        self.action(vertex)
+        action_notification_chan = yield dispatch.MakeChannel()
+        yield dispatch.Spawn(self.action_factory(self.graph,
+                                                 vertex,
+                                                 action_notification_chan))
+        yield dispatch.Recv(action_notification_chan)
 
         # Notify our completion.
         yield dispatch.Send(downstream_chan, Ellipsis, block=False)
@@ -166,4 +169,16 @@ class Update:
             yield dispatch.Spawn(demultiplex(sink_notification_chans,
                                              completion_chan))
             yield dispatch.Recv(completion_chan) # Wait for completion.
+
+
+# Update action factory for checkint up-to-date status.
+class NotUpToDateException(Exception): pass
+@dispatch.tasklet
+def isuptodate(graph, vertex, notification_chan):
+    # If we are started, all ancestors of vertex are known to be up to date.
+    if vertex.is_locally_up_to_date(graph):
+        pass
+    else:
+        raise NotUpToDateException(vertex)
+    yield dispatch.Send(notification_chan, Ellipsis, block=False)
 
