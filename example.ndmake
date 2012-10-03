@@ -59,14 +59,17 @@ filename: input/symlinks/{{EXPERIMENT}}/metadata.txt
 
 [dimension FRAME]
 parents: EXPERIMENT
-dataset: input_metadata
-range_command: ... (command to print range args to stdout?)
-# Instead of range_command, values_command or value_extractor +
-# value_transformer can be used.
-# value_extractor: template expanding into regular expression, with named
-# subpattern: (?P<value>...)
-# value_transformer: template converting extracted value ("value") to domain
-# value
+input: input_metadata
+range_command: echo 100 # XXX Temporary, of course.
+# Instead of range_command, values_command or match + transform can be used.
+# Output of range_command or values_command is shlex'ed.
+#
+# match: template expanding into regular expression, with named
+# subpattern: (?P<value>...) [allow unnamed if only one group appears in re]
+# transform: template converting extracted value ("value") to domain value
+#
+# Note that "match" pattern is processed by 1) rendering the template, 2)
+# splitting at slashes, 3) interpreting each item as a regular expression.
 
 [dataset input_tifs]
 dimensions: FRAME
@@ -195,7 +198,7 @@ filename: compute/registered/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.tif
 
 [compute plot_displacement]
 dimensions: FRAME.selection
-input glass_refframe deformation_field
+input: glass_refframe deformation_field
 parallel: yes
 command: python plot_field.py --image={{glass_refframe}} \
      --title='Per-frame, {{EXPERIMENT}}: {{"% 4d"|format(FRAME)}}' \

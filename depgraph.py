@@ -1,8 +1,24 @@
-import itertools
-import collections
 from collections import OrderedDict
+import collections
+import warnings
+import functools
+import inspect
+import itertools
 import shlex
 import template
+
+
+DEBUG = True
+if DEBUG:
+    def dprint(*args):
+        print("depgraph: {}:".format(args[0]), *args[1:])
+else:
+    def dprint(*args): pass
+def abstract_method_call(object_, method_name):
+    class_name = type(object_).__name__
+    return "abstract method {} called on {} instance".format(method_name,
+                                                             class_name)
+
 
 # Static data representation and dynamic execution context are partially
 # separated: Instances of StaticGraph and individual model objects do not store
@@ -12,8 +28,13 @@ import template
 # with the model object as primary target and runtime context (dynamic_graph)
 # as secondary target.
 
-# A documentation-only decorator.
-def runtime(method): return method
+def runtime(method):
+    # Decorator for dynamic method, which should have the signature
+    # def f(self, dynamic_graph, ...).
+    # If the runtime decorator does not implement f(self, ...), calls to f
+    # will be forwarded with the dynamic_graph argument added.
+    method.is_runtime_method = True
+    return method
 
 
 #
@@ -152,22 +173,20 @@ class StaticGraph:
 
 
 class DynamicGraph:
-    def __init__(self, static_graph, runtime_proxy_factory=lambda x, y: x):
+    def __init__(self, static_graph, runtime_decorator_factory=lambda x, y: x):
         self.static_graph = static_graph
 
-        if isinstance(runtime_proxy_factory, collections.Mapping):
+        if isinstance(runtime_decorator_factory, collections.Mapping):
             def factory(graph, object):
-                for type_, proxy_type in runtime_proxy_factory.items():
-                    if isinstance(object, type_):
-                        return proxy_type(graph, object)
-                if Ellipsis in runtime_proxy_factory:
-                    return runtime_proxy_factory[Ellipsis](graph, object)
+                for type_, decorator_type in runtime_decorator_factory.items():
+                    if type_ is Ellipsis or isinstance(object, type_):
+                        return decorator_type(graph, object)
                 return object
         else:
-            factory = runtime_proxy_factory
-        self.runtime_proxy_factory = factory
+            factory = runtime_decorator_factory
+        self.runtime_decorator_factory = factory
 
-        self.runtime_proxies = {} # object -> proxy
+        self.runtime_decorators = {} # object -> decorator
 
     _forwarded_attrs = ("dimensions", "templateset",)
     def __getattr__(self, name):
@@ -179,13 +198,13 @@ class DynamicGraph:
         return self.runtime(vertex)
 
     def parents_of(self, vertex):
-        if isinstance(vertex, RuntimeProxy):
+        if isinstance(vertex, RuntimeDecorator):
             vertex = vertex.static_object
         parents = self.static_graph.parents_of(vertex)
         return list(self.runtime(v) for v in parents)
 
     def children_of(self, vertex):
-        if isinstance(vertex, RuntimeProxy):
+        if isinstance(vertex, RuntimeDecorator):
             vertex = vertex.static_object
         children = self.static_graph.children_of(vertex)
         return list(self.runtime(v) for v in children)
@@ -199,42 +218,38 @@ class DynamicGraph:
         return list(self.runtime(v) for v in sinks)
 
     def runtime(self, object):
-        # Return the runtime proxy object for the given object.
+        # Return the runtime decorator object for the given object.
 
-        if isinstance(object, RuntimeProxy):
+        if isinstance(object, RuntimeDecorator):
             return object
 
-        if object not in self.runtime_proxies:
-            self.runtime_proxies[object] = self.runtime_proxy_factory(self,
-                                                                      object)
-        return self.runtime_proxies[object]
+        if object not in self.runtime_decorators:
+            self.runtime_decorators[object] = \
+                    self.runtime_decorator_factory(self, object)
+        return self.runtime_decorators[object]
 
 
 #
-# Runtime proxy objects
+# Runtime decorator objects
 #
 
-class RuntimeProxy:
+class RuntimeDecorator:
     # We keep this simple, rather than dealing with various edge cases upfront.
 
     def __init__(self, dynamic_graph, static_object):
         self.graph = dynamic_graph
         self.static_object = static_object
 
-    def __str__(self):
+    def __repr__(self):
         return "<{} {}>".format(self.__class__.__name__,
                                 str(self.static_object))
 
     def __getattr__(self, name):
-        return getattr(self.static_object, name)
-
-
-class VertexStateRuntime(RuntimeProxy):
-    def __init__(self, graph, vertex):
-        super().__init__(graph, vertex)
-
-        self.mtime = None
-        self.is_up_to_date = None # None = unknown; False = known out of date.
+        value = getattr(self.static_object, name)
+        if inspect.ismethod(value):
+            if hasattr(value.__func__, "is_runtime_method"):
+                return functools.partial(value, self.graph)
+        return value
 
 
 #
@@ -245,7 +260,7 @@ class Spatial:
     # Anything that has an associated space.
     @property
     def space(self):
-        assert False, "abstract method call"
+        assert False, abstract_method_call(self, "space")
 
 
 #
@@ -253,11 +268,16 @@ class Spatial:
 #
 
 class Vertex(Spatial):
-    def __init__(self, name):
+    def __init__(self, name, space):
         self.name = name
+        self._space = space
 
-    def __str__(self):
+    def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
+
+    @property
+    def space(self):
+        return self._space
 
     @property
     def namespace_type(self):
@@ -268,19 +288,21 @@ class Vertex(Spatial):
         if isinstance(self, DomainSurveyer):
             return DomainSurveyer
 
-    def is_locally_up_to_date(self, dynamic_graph):
-        assert False, "abstract method call"
+    @runtime
+    def is_locally_up_to_date(self, dynamic_graph, element):
+        assert False, abstract_method_call(self, "is_locally_up_to_date")
 
-    def compute(self, dynamic_graph):
-        assert False, "abstract method call"
+    @runtime
+    def compute(self, dynamic_graph, element):
+        assert False, abstract_method_call(self, "compute")
 
 
 class VertexPlaceholder(Vertex):
     def __init__(self, name, type_):
-        super().__init__(name)
+        super().__init__(name, Space())
         self.type_ = type_
 
-    def __str__(self):
+    def __repr__(self):
         return "<{} placeholder \"{}\">".format(self.type_.__name__, self.name)
 
     @property
@@ -295,7 +317,10 @@ class VertexPlaceholder(Vertex):
 class Dimension:
     def __init__(self, name):
         self.name = name
-        self.domains = {} # name -> domain
+        self.domains = {} # name -> domain; Ellipsis |-> FullDomain.
+
+    def __repr__(self):
+        return "<{} {}>".format(self.__class__.__name__, self.name)
 
     @property
     def full_domain(self):
@@ -303,14 +328,14 @@ class Dimension:
 
 
 #
-# Domain sequence sources
+# Sequence sources
 #
 
 # Sequence sources supply the range or value list for a domain. Sequence
 # sources can be configured with static ranges or value lists, or can use a
 # domain surveyer at runtime to determine the range or value list.
 
-class DomainSequenceSource(Spatial):
+class SequenceSource(Spatial):
     def __init__(self, parent_space):
         self._space = parent_space
 
@@ -319,39 +344,43 @@ class DomainSequenceSource(Spatial):
         return self._space
 
     @runtime
-    def sequence(self, dynamic_graph, parent_point=Ellipsis):
-        assert False, "abstract method call"
+    def sequence(self, dynamic_graph, parent_element=None):
+        assert False, abstract_method_call(self, "sequence")
 
-class EnumeratedDomainSequenceSource(DomainSequenceSource):
+class EnumeratedSequenceSource(SequenceSource):
     def __init__(self, parent_space, values):
         super().__init__(parent_space)
         self.values = values # Surveyer or template.
 
     @runtime
-    def sequence(self, dynamic_graph, parent_point=Ellipsis):
-        if isinstance(self, values, DomainSurveyer):
+    def sequence(self, dynamic_graph, parent_element=None):
+        if parent_element is None:
+            parent_element = Element()
+
+        if isinstance(self.values, DomainSurveyer):
             # Dynamic domain.
-            surveyer = self.values
-            return surveyer.values(dynamic_graph, parent_point)
+            surveyer = dynamic_graph.runtime(self.values)
+            return surveyer.values(parent_element)
 
         # Static domain.
-        template = self.values
-        dict_ = self.space.point_to_dict(parent_point)
-        filename_expander = self.space.filename_expander(dynamic_graph)
-        rendered_values = template.render(dict_, filename_expander)
+        rendered_values = parent_element.render_template(dynamic_graph,
+                                                         self.values)
         return shlex.split(rendered_values)
 
-class RangeDomainSequenceSource(DomainSequenceSource):
+class RangeSequenceSource(SequenceSource):
     def __init__(self, parent_space, rangeargs):
         super().__init__(parent_space)
         self.rangeargs = rangeargs # Surveyer or template.
 
     @runtime
-    def sequence(self, dynamic_graph, parent_point=Ellipsis):
+    def sequence(self, dynamic_graph, parent_element=None):
+        if parent_element is None:
+            parent_element = Element()
+
         if isinstance(self.rangeargs, DomainSurveyer):
             # Dynamic domain.
-            surveyer = self.rangeargs
-            values = surveyer.values(dynamic_graph, parent_point)
+            surveyer = dynamic_graph.runtime(self.rangeargs)
+            values = surveyer.values(parent_element)
             if isinstance(values, range):
                 return values
             values = sorted(int(v) for v in values)
@@ -373,10 +402,8 @@ class RangeDomainSequenceSource(DomainSequenceSource):
             return range_
 
         # Static domain.
-        template = self.values
-        dict_ = self.space.point_to_dict(parent_point)
-        filename_expander = self.space.filename_expander(dynamic_graph)
-        rendered_values = template.render(dict_, filename_expander)
+        rendered_values = parent_element.render_template(dynamic_graph,
+                                                         self.values)
         rangeargs = tuple(int(a) for a in rendered_values.split())
         if len(rangeargs) not in range(1, 4):
             raise ValueError("range template must expand to 1-3 integers")
@@ -393,13 +420,9 @@ class RangeDomainSequenceSource(DomainSequenceSource):
 # source).
 
 class DomainSurveyer(Vertex):
-    def __init__(self, name, parent_space):
-        super().__init__(name)
-        self._space = parent_space
-
-    @property
-    def space(self):
-        return self._space
+    @runtime
+    def values(self, dynamic_graph, parent_element):
+        assert False, abstract_method_call(self, "values")
 
 
 class RangeCommandDomainSurveyer(DomainSurveyer):
@@ -408,8 +431,12 @@ class RangeCommandDomainSurveyer(DomainSurveyer):
         self.command_template = command_template
 
 
-class PatternDomainSurveyer(DomainSurveyer):
-    pass
+class FilenamePatternDomainSurveyer(DomainSurveyer):
+    def __init__(self, name, parent_space, match_pattern_template,
+                 value_transform_template):
+        super().__init__(name, parent_space)
+        self.match_pattern_template = match_pattern_template
+        self.value_transform_template = value_transform_template
 
 
 #
@@ -428,18 +455,29 @@ class Domain(Spatial):
         self._space = (parent_space if parent_space
                        else Space())
 
+    def __repr__(self):
+        return "<{} {} of Dimension {}>".format(self.__class__.__name__,
+                                                self.name,
+                                                self.dimension.name)
+
     @property
     def space(self):
         return self._space
 
     @runtime
-    def iterate(self, dynamic_graph, parent_point=Ellipsis):
-        assert False, "abstract method call"
+    def iterate(self, dynamic_graph, parent_element=None):
+        assert False, abstract_method_call(self, "iterate")
 
 class FullDomain(Domain):
     @runtime
-    def iterate(self, dynamic_graph, parent_point=Ellipsis):
-        return iter(self.seq_source.sequence(dynamic_graph, parent_point))
+    def iterate(self, dynamic_graph, parent_element=None):
+        if parent_element is None:
+            parent_element = Element()
+        return iter(self.seq_source.sequence(dynamic_graph, parent_element))
+
+    def __repr__(self):
+        return "<{} of Dimension {}>".format(self.__class__.__name__,
+                                             self.dimension.name)
 
 class Subdomain(Domain):
     def __init__(self, *args, **kwargs):
@@ -455,13 +493,16 @@ class Subdomain(Domain):
 
 class SubsetDomain(Subdomain):
     @runtime
-    def iterate(self, dynamic_graph, parent_point=Ellipsis):
+    def iterate(self, dynamic_graph, parent_element=None):
+        if parent_element is None:
+            parent_element = Element()
+
         parent_seq = self.full_domain.seq_source.sequence(dynamic_graph,
-                                                          parent_point)
+                                                          parent_element)
         if not isinstance(parent_seq, range):
             parent_seq = frozenset(parent_seq) # Speed up.
 
-        for value in self.seq_source.sequence(dynamic_graph, parent_point):
+        for value in self.seq_source.sequence(dynamic_graph, parent_element):
             if value not in parent_seq:
                 raise ValueError("value generated by subset domain surveyer "
                                  "not in full domain of dimension")
@@ -469,8 +510,11 @@ class SubsetDomain(Subdomain):
 
 class SliceDomain(Subdomain):
     @runtime
-    def iterate(self, dynamic_graph, parent_point=Ellipsis):
-        slicerange = self.seq_source.sequence(dynamic_graph, parent_point)
+    def iterate(self, dynamic_graph, parent_element=None):
+        if parent_element is None:
+            parent_element = Element()
+
+        slicerange = self.seq_source.sequence(dynamic_graph, parent_element)
         assert isinstance(slicerange, range)
 
         if len(slicerange) == 0:
@@ -483,13 +527,13 @@ class SliceDomain(Subdomain):
                           slicerange[1] - slicerange[0])
 
         parent_seq = self.full_domain.seq_source.sequence(dynamic_graph,
-                                                          parent_point)
+                                                          parent_element)
         return iter(parent_seq[slice])
 
 
 
 #
-# Space
+# Space and Element
 #
 
 # Each dataset or computation has an associated space, which is the outer
@@ -498,63 +542,150 @@ class SliceDomain(Subdomain):
 
 # Dimensions with parents (i.e. dimensions whose domains depend on the selected
 # element in its parent dimensions) are expressed as dimensions that depend
-# on the selected point in the outer product space of the unidimensional spaces
-# associated with the parent dimensions.
+# on the selected element in the outer product space of the unidimensional
+# spaces associated with the parent dimensions.
 
 class Space:
-    def __init__(self, dimensions_domains={}):
-        self.domains = OrderedDict() # Dimension -> Domain
-        for dim, dom in dimensions_domains.items():
-            assert dom.dimension is dim
-            self.domains[dim] = dom
+    def __init__(self, extent={}):
+        # extent: dimension -> tuple(domains)
+        self.extent = OrderedDict() # Dimension -> Domain
+        for dim, doms in extent.items():
+            for dom in doms:
+                assert dom.dimension is dim
+            self.extent[dim] = doms
+
+    def __repr__(self):
+        dims = ((dim if isinstance(doms, FullDomain) else dim + "." + doms)
+                for dim, doms in self.extent)
+        return "<Space [{}]>".format(", ".join(dims))
 
     @property
     def ndims(self):
-        return len(self.domains)
+        return len(self.extent)
+
+    @property
+    def dimensions(self):
+        return self.extent.keys()
 
     @runtime
-    def iterate(self, dynamic_graph, parent_point=Ellipsis):
-        # Yield all points of the space in order.
-        if not len(self.domains):
-            yield Ellipsis
+    def iterate(self, dynamic_graph, parent_element=None):
+        if parent_element is None:
+            parent_element = Element()
+
+        # Sanity check: TODO Remove.
+        for dim in parent_element.space.dimensions:
+            assert dim not in self.dimensions
+
+        # Yield all elements of the space in order.
+        if not len(self.extent):
+            if parent_element.space.ndims > 0:
+                yield parent_element
+            else:
+                yield Element()
             return
-        dim, dom = self.domains.items()[0]
 
-        if isinstance(dom, tuple):
-            keys = tuple(dim + "." + d.name for d in dom)
-            values = zip(*(d.iterate(dynamic_graph, parent_point)
-                           for d in dom))
-        else:
-            keys = (dim,)
-            values = zip(dim.iterate(dynamic_graph, parent_point))
+        # The dimension to iterate along: the first dimension.
+        extent_items = list(self.extent.items())
+        dimension, domains = extent_items[0]
 
-        for coordinates in values:
-            first_dim_point = list((k, v) for k, v in zip(keys, coordinates))
+        # Extend the parent space with the first dimension.
+        new_parent_space = (parent_element.space.
+                            space_by_adding_dimension(dimension, domains))
+        for coord in zip(*(dom.iterate(dynamic_graph, parent_element)
+                           for dom in domains)):
+            coords = parent_element.coordinates.copy()
+            coords[dimension] = coord
+            element = Element(new_parent_space, coords)
 
-            rest_space = Space(self.domains.items()[1:])
-            for rest_dims_point in rest_space.iterate(dynamic_graph,
-                                                      first_dim_point):
-                if rest_dims_point is Ellipsis:
-                    yield first_dim_point
-                yield first_dim_point + rest_dims_point
+            remaining_space = Space(OrderedDict(extent_items[1:]))
+            for full_element in remaining_space.iterate(dynamic_graph,
+                                                        element):
+                yield full_element
+
+    def space_by_adding_dimension(self, dimension, domains):
+        extent = self.extent.copy()
+        extent[dimension] = domains
+        return Space(extent)
 
     def quotient_space(self, other):
         quotient_domains = OrderedDict()
-        for dim in numer.domains:
-            if dim in denom.domains:
-                assert len(numer.domains[dim]) == len(denom.domains[dim])
+        for dim in numer.extent:
+            if dim in denom.extent:
+                assert len(numer.extent[dim]) == len(denom.extent[dim])
                 continue
-            quotient_domains[dim] = numer.domains[dim]
+            quotient_domains[dim] = numer.extent[dim]
         return self.__class__(quotient_domains)
+
+    def is_compatible_space(self, other):
+        warnings.warn("TODO: Space.is_compatible_space")
+        return True # TODO
 
     def is_subspace(self, other):
         # Return True if self is subspace of other.
         # Need to determine how to handle domain-domain relationships.
+        warnings.warn("TODO: Space.is_subspace")
         return True # TODO
 
-    def point_to_dict(self, point):
-        # convert a tuple to a dict
-        pass
+
+class Element(Spatial):
+    # An immutable "vector" (or "point") in a Space.
+    def __init__(self, space=Space(), coordinates=dict()):
+        self._space = space
+        self.coordinates = dict((dim, coordinates[dim])
+                                for dim in self.space.dimensions)
+
+    def __hash__(self):
+        return hash(tuple(self.coordinates[dim]
+                          for dim in self.space.dimensions))
+
+    def __eq__(self, other):
+        self_tuple = tuple(self.coordinates[dim]
+                           for dim in self.space.dimensions)
+        other_tuple = tuple(other.coordinates[dim]
+                            for dim in other.space.dimensions)
+        return self_tuple == other_tuple
+
+    def __repr__(self):
+        dims = ((dim if isinstance(doms, FullDomain) else dim + "." + doms)
+                for dim, doms in self.space.extent)
+        coords = (self.coordinates[dim] for dim in self.space.dimensions)
+        return "<Element [{}]>".format(", ".join("{} = {}".format(dim, coord)
+                                               for dim, coord
+                                               in zip(dims, coords)))
+
+    @property
+    def space(self):
+        return self._space
+
+    def as_dict(self):
+        dict_ = {}
+        for dimension in self.space.dimensions:
+            for i, domain in enumerate(self.space.extent[dimension]):
+                if isinstance(domain, FullDomain):
+                    key = dimension.name
+                else:
+                    key = "{}.{}".format(dimension.name, domain.name)
+                dict_[key] = self.coordinates[dimension][i]
+        return dict_
+
+    @runtime
+    def filename_expander(self, dynamic_graph):
+        def expander(dataset_name, extra_coords):
+            dataset = dynamic_graph.vertex_by_name(dataset_name, Dataset)
+            return self.render_template(dynamic_graph,
+                                        dataset.filename_template,
+                                        extra_names=extra_coords)
+        return expander
+
+    @runtime
+    def render_template(self, dynamic_graph, template,
+                        expand_datasets=False, extra_names={}):
+        dict_ = self.as_dict().copy()
+        dict_.update(extra_names)
+        expander = (self.filename_expander(dynamic_graph)
+                    if expand_datasets else None)
+        rendition = template.render(dict_, expander)
+        return rendition
 
 
 #
@@ -563,21 +694,13 @@ class Space:
 
 class Dataset(Vertex):
     def __init__(self, name, space, filename_template):
-        super().__init__(name)
-
-    def is_locally_up_to_date(self, dynamic_graph):
-        # In case the dataset is not produced by a computation, we check that
-        # all files are present.
-        return self.mtime() > 0
+        super().__init__(name, space)
+        self.filename_template = filename_template
 
 class Computation(Vertex):
     def __init__(self, name, space, command_template, parallel=False):
-        super().__init__(name)
+        super().__init__(name, space)
+        self.command_template = command_template
+        self.parallel = parallel
 
-    def is_locally_up_to_date(self, dynamic_graph):
-        newest_input_mtime = max(input.mtime() for input
-                                 in dynamic_graph.parents_of(self))
-        oldest_output_ntime = min(output.mtime() for output
-                                  in dynamic_graph.children_of(self))
-        return newest_input_mtime < oldest_output_ntime
 

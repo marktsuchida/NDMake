@@ -4,10 +4,17 @@ import update
 import dispatch
 import sys
 
-# Just a test for now:
-graph = depgraph.StaticGraph()
-ndmakefile.read_depgraph(graph, sys.argv[1])
+# Just a test for now.
 
-update = update.Update(graph, update.isuptodate)
-dispatch.start_with_tasklet(update.update_sinks())
+with open(sys.argv[1]) as file:
+    graph = ndmakefile.NDMakefile(file).graph
+
+updater = update.Update(graph)
+try:
+    dispatch.start_with_tasklet(updater.update_vertices(graph.sinks()))
+except update.NotUpToDateException as e:
+    vertex = e.args[0]
+    if isinstance(vertex, depgraph.RuntimeDecorator):
+        vertex = vertex.static_object
+    print("not up to date:", vertex)
 

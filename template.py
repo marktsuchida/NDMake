@@ -15,7 +15,8 @@ class TemplateSet:
         self.sources = {"__globaldefs": ""}
 
         def load_template(template_name):
-            prefix = "{% import '__globaldefs' as g %}"
+            prefix = ("{% import '__globaldefs' as g %}"
+                      if template_name != "__globaldefs" else "")
             source = self.sources[template_name]
             return prefix + source
         loader = jinja2.FunctionLoader(load_template)
@@ -29,12 +30,11 @@ class TemplateSet:
 
         self.filename_expander = None
         @jinja2.contextfunction
-        def filename(context, dataset_name, **parameters):
+        def filename(context, dataset_name, **extra_coords):
             if self.filename_expander is None:
-                raise
-            dict_ = context.vars.copy()
-            dict_.update(parameters)
-            return self.filename_expander(dataset_name, dict_)
+                raise ValueError("filename function not allowed in this "
+                                 "template")
+            return self.filename_expander(dataset_name, extra_coords)
         e.globals["filename"] = filename
 
         self.environment = e
@@ -67,12 +67,13 @@ class Template:
             self.params = jinja2.meta.find_undeclared_variables(ast)
         return self.params
 
-    def render(self, dict_, filename_expander):
+    def render(self, dict_, filename_expander=None):
         save_expander = self.templateset.filename_expander
         self.templateset.filename_expander = filename_expander
 
         tmpl_impl = self.environment.get_template(self.name)
-        ret = tmpl_impl.render(dict_)
+        rendition = tmpl_impl.render(dict_)
 
         self.templateset.filename_expander = save_expander
+        return rendition
 

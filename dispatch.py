@@ -5,6 +5,7 @@ import functools
 import heapq
 import itertools
 import queue
+import types
 import warnings
 import weakref
 
@@ -86,7 +87,10 @@ class _Tasklet():
         self.tid = tid
         self.coroutine = coroutine
         self.priority = priority
+        self.return_chan = None
         self.is_daemon = False
+        self.exited = False
+        self.terminated = False
 
         self.send_waiting_hchan = None
         self.send_waiting_ref = None
@@ -97,7 +101,13 @@ class _Tasklet():
         return repr(self)
 
     def __repr__(self):
-        return "<Tasklet {} {}>".format(self.tid, self.coroutine.__name__)
+        status = ""
+        if self.exited:
+            status = " (exited)"
+        elif self.terminated:
+            status = " (terminated)"
+        return "<Tasklet {} {}{}>".format(self.tid, self.coroutine.__name__,
+                                          status)
 
     def run(self, sendval=None):
         return self.coroutine.send(sendval)
@@ -254,6 +264,10 @@ class _Kernel():
         return hchan
 
     def new_tasklet(self, coroutine, priority):
+        # Catch a common error (forgetting to in clude a `yield' in the func).
+        assert isinstance(coroutine, types.GeneratorType), \
+                ("attempt to start tasklet with non-generator: {}".
+                 format(coroutine))
         tasklet = _Tasklet(self, next(self.tid_generator), coroutine, priority)
         self.tasklets.add(tasklet)
         return tasklet
@@ -262,6 +276,7 @@ class _Kernel():
         dprint(tasklet, "terminating")
         self.tasklets.remove(tasklet)
         tasklet.coroutine.close() # XXX Exceptions? Ignore for now.
+        tasklet.terminated = True
 
     def terminate_all(self):
         for tasklet in list(self.tasklets):
@@ -279,13 +294,29 @@ class _Kernel():
         while True: # Keep running while message chain continues.
             try:
                 kcall = tasklet.run(sendval)
-            except StopIteration: # Tasklet terminated successfully.
+
+            except StopIteration as status: # Tasklet terminated successfully.
                 dprint(tasklet, "exited")
+                tasklet.exited = True
                 self.tasklets.remove(tasklet)
                 if tasklet.tid == 0: # Initial tasklet.
                     self.tid0_exited = True
                     self.terminate_daemons()
+
+                return_value = status.value
+                if tasklet.return_hchan is not None:
+                    return_chan = tasklet.return_hchan._chan
+                    ref = return_chan.enqueue(return_value, tasklet)
+                    dprint(return_chan, tasklet, "returned", return_value)
+                    for s_tasklet in return_chan.select_recv_queue:
+                        s_tasklet.clear_waits()
+                        sendval = (Select.RECV, tasklet.return_hchan)
+                        tasklet = s_tasklet
+                        continue
+                else:
+                    dprint(tasklet, "return value discarded:", return_value)
                 break
+
             except: # Tasklet terminated abnormally.
                 self.tasklets.remove(tasklet)
                 self.terminate_all()
@@ -386,12 +417,14 @@ class Spawn(_KernelCall):
     higher-priority tasklets to run.
     """
 
-    def __init__(self, coroutine, priority=0):
+    def __init__(self, coroutine, priority=0, return_chan=None):
         self.coroutine = coroutine
         self.priority = priority
+        self.return_hchan = return_chan
 
     def __call__(self, kernel, tasklet):
         new_tasklet = kernel.new_tasklet(self.coroutine, self.priority)
+        new_tasklet.return_hchan = self.return_hchan
         dprint(new_tasklet, "spawned by", tasklet)
         kernel.place_in_backlog(tasklet, TaskletHandle(new_tasklet))
         return new_tasklet, None
@@ -682,8 +715,8 @@ def start_with_tasklet(tasklet, priority=0):
     # survive till start_with_tasklet() returns.
 
 
-def tasklet(coroutine):
-    """A generator decorator indicating a tasklet.
+def tasklet(coroutine_func):
+    """A generator function decorator indicating a tasklet.
 
     Actually returns the generator unmodified; use of this decorator is solely
     for the purpose of annotation.
@@ -704,11 +737,11 @@ def tasklet(coroutine):
     Tasklets should only allow exceptions to escape if the kernel, together
     with all other tasklets, is to be terminated.
     """
-    return coroutine
+    return coroutine_func
 
 
-def subtasklet(coroutine):
-    """A generator decorator indicating a tasklet subroutine.
+def subtasklet(coroutine_func):
+    """A generator function decorator indicating a tasklet subroutine.
 
     Actually returns the generator unmodified; use of this decorator is solely
     for the purpose of annotation. 
@@ -717,5 +750,5 @@ def subtasklet(coroutine):
     a value (via a `return' statement), and can raise exceptions to be caught
     in the calling (sub)tasklet.
     """
-    return coroutine
+    return coroutine_func
 
