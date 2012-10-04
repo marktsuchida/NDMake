@@ -253,31 +253,16 @@ class RuntimeDecorator:
 
 
 #
-# Spatial
-#
-
-class Spatial:
-    # Anything that has an associated space.
-    @property
-    def space(self):
-        assert False, abstract_method_call(self, "space")
-
-
-#
 # Vertex
 #
 
-class Vertex(Spatial):
+class Vertex:
     def __init__(self, name, space):
         self.name = name
-        self._space = space
+        self.space = space
 
     def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
-
-    @property
-    def space(self):
-        return self._space
 
     @property
     def namespace_type(self):
@@ -317,14 +302,14 @@ class VertexPlaceholder(Vertex):
 class Dimension:
     def __init__(self, name):
         self.name = name
-        self.domains = {} # name -> domain; Ellipsis |-> FullDomain.
+        self.domains = {} # name -> domain; "" |-> FullDomain.
 
     def __repr__(self):
         return "<{} {}>".format(self.__class__.__name__, self.name)
 
     @property
     def full_domain(self):
-        return self.domains[Ellipsis]
+        return self.domains[""]
 
 
 #
@@ -335,13 +320,9 @@ class Dimension:
 # sources can be configured with static ranges or value lists, or can use a
 # domain surveyer at runtime to determine the range or value list.
 
-class SequenceSource(Spatial):
+class SequenceSource:
     def __init__(self, parent_space):
-        self._space = parent_space
-
-    @property
-    def space(self):
-        return self._space
+        self.space = parent_space
 
     @runtime
     def sequence(self, dynamic_graph, parent_element=None):
@@ -445,24 +426,22 @@ class FilenamePatternDomainSurveyer(DomainSurveyer):
 
 # A domain represents a set of possible values along a dimension.
 
-class Domain(Spatial):
-    def __init__(self, seq_source, dimension, name=Ellipsis,
+class Domain:
+    def __init__(self, seq_source, dimension, name=None,
                  parent_space=None):
         self.seq_source = seq_source
         self.dimension = dimension
+        if name is None:
+            assert isinstance(self, FullDomain)
+            name = ""
         self.name = name
         dimension.domains[name] = self
-        self._space = (parent_space if parent_space
-                       else Space())
+        self.space = (parent_space if parent_space else Space())
 
     def __repr__(self):
         return "<{} {} of Dimension {}>".format(self.__class__.__name__,
                                                 self.name,
                                                 self.dimension.name)
-
-    @property
-    def space(self):
-        return self._space
 
     @runtime
     def iterate(self, dynamic_graph, parent_element=None):
@@ -554,9 +533,13 @@ class Space:
                 assert dom.dimension is dim
             self.extent[dim] = doms
 
+        # XXX make a topologically sorted dims list!
+
     def __repr__(self):
-        dims = ((dim if isinstance(doms, FullDomain) else dim + "." + doms)
-                for dim, doms in self.extent)
+        dims = ("{}.{}".
+                format(dim.name, "|".join(dom.name for dom in doms)).
+                rstrip(".")
+                for dim, doms in self.extent.items())
         return "<Space [{}]>".format(", ".join(dims))
 
     @property
@@ -627,18 +610,21 @@ class Space:
         return True # TODO
 
 
-class Element(Spatial):
+class Element:
     # An immutable "vector" (or "point") in a Space.
     def __init__(self, space=Space(), coordinates=dict()):
-        self._space = space
+        self.space = space
+        # XXX
         self.coordinates = dict((dim, coordinates[dim])
                                 for dim in self.space.dimensions)
 
     def __hash__(self):
+        # XXX
         return hash(tuple(self.coordinates[dim]
                           for dim in self.space.dimensions))
 
     def __eq__(self, other):
+        # XXX
         self_tuple = tuple(self.coordinates[dim]
                            for dim in self.space.dimensions)
         other_tuple = tuple(other.coordinates[dim]
@@ -646,18 +632,18 @@ class Element(Spatial):
         return self_tuple == other_tuple
 
     def __repr__(self):
-        dims = ((dim if isinstance(doms, FullDomain) else dim + "." + doms)
-                for dim, doms in self.space.extent)
+        # XXX WRONG need parent domains
+        dims = ("{}.{}".
+                format(dim.name, "|".join(dom.name for dom in doms)).
+                rstrip(".")
+                for dim, doms in self.space.extent.items())
         coords = (self.coordinates[dim] for dim in self.space.dimensions)
         return "<Element [{}]>".format(", ".join("{} = {}".format(dim, coord)
                                                for dim, coord
                                                in zip(dims, coords)))
 
-    @property
-    def space(self):
-        return self._space
-
     def as_dict(self):
+        # XXX
         dict_ = {}
         for dimension in self.space.dimensions:
             for i, domain in enumerate(self.space.extent[dimension]):

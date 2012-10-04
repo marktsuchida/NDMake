@@ -280,7 +280,10 @@ class DatasetUpdateRuntime(VertexUpdateRuntime):
 
             oldest, newest = MAX_TIME, 0
             space = self.graph.runtime(self.space)
+            dprint("check_file_stats space", space)
+            dprint("check_file_stats element", element)
             for full_element in space.iterate(element):
+                dprint("check_file_stats full_element", full_element)
                 if full_element in self.file_stats_cache:
                     old, new = self.file_stats_cache[full_element]
                     if (old, new) == (0, MAX_TIME):
@@ -341,7 +344,7 @@ class ComputationUpdateRuntime(VertexUpdateRuntime):
         return newest_input_mtime < oldest_output_mtime
 
 
-class RangeCommandDomainSurveyerRuntime(depgraph.RuntimeDecorator):
+class RangeCommandDomainSurveyerRuntime(VertexUpdateRuntime):
     def __init__(self, graph, surveyer):
         super().__init__(graph, surveyer)
 
