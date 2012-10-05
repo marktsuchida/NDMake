@@ -6,14 +6,10 @@ import inspect
 import itertools
 import shlex
 import template
+import debug
 
 
-DEBUG = True
-if DEBUG:
-    def dprint(*args):
-        print("depgraph: {}:".format(args[0]), *args[1:])
-else:
-    def dprint(*args): pass
+dprint = debug.dprint_factory(__name__, True)
 def abstract_method_call(object_, method_name):
     class_name = type(object_).__name__
     return "abstract method {} called on {} instance".format(method_name,
@@ -257,9 +253,9 @@ class RuntimeDecorator:
 #
 
 class Vertex:
-    def __init__(self, name, space):
+    def __init__(self, name, scope):
         self.name = name
-        self.space = space
+        self.scope = scope
 
     def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
@@ -270,16 +266,8 @@ class Vertex:
             return Dataset
         if isinstance(self, Computation):
             return Computation
-        if isinstance(self, DomainSurveyer):
-            return DomainSurveyer
-
-    @runtime
-    def is_locally_up_to_date(self, dynamic_graph, element):
-        assert False, abstract_method_call(self, "is_locally_up_to_date")
-
-    @runtime
-    def compute(self, dynamic_graph, element):
-        assert False, abstract_method_call(self, "compute")
+        if isinstance(self, Survey):
+            return Survey
 
 
 class VertexPlaceholder(Vertex):
@@ -296,335 +284,455 @@ class VertexPlaceholder(Vertex):
 
 
 #
+# Surveyer
+#
+
+# Surveyers dynamically determine a extent at runtime. They supply the extent
+# sequence with either a range or a value list (converting a value list into a
+# range, if necessary, is the responsibility of the sequence).
+
+class Surveyer:
+    @runtime
+    def survey(self, dynamic_graph, element):
+        assert False, abstract_method_call(self, "survey")
+
+class CommandSurveyer(Surveyer):
+    def __init__(self, scope, command_template):
+        pass
+
+class IntegerTripletCommandSurveyer(CommandSurveyer):
+    pass
+
+class ValuesCommandSurveyer(CommandSurveyer):
+    def __init__(self, scope, command_template, transform_template=None):
+        pass
+
+class FilenameSurveyer(Surveyer):
+    def __init__(self, scope, pattern_template, transform_template=None):
+        pass
+
+#
+# Surveys
+#
+
+# These are part of the dependency graph and cache their result.
+
+class Survey(Vertex):
+    def __init__(self, name, scope, surveyer):
+        self.name = name
+
+class ValuesSurvey(Survey):
+    @runtime
+    def values(self, dynamic_graph, element):
+        return [] # TODO
+
+class RangeSurvey(Survey):
+    @runtime
+    def range(self, dynamic_graph, element):
+        return range(10) # TODO
+
+class SliceSurvey(Survey):
+    @runtime
+    def slice(self, dynamic_graph, element):
+        return slice(0) # TODO
+
+
+#
 # Dimension
 #
 
 class Dimension:
     def __init__(self, name):
         self.name = name
-        self.domains = {} # name -> domain; "" |-> FullDomain.
+        self.full_extent = None
 
     def __repr__(self):
         return "<{} {}>".format(self.__class__.__name__, self.name)
 
+    def extent_by_name(self, name):
+        names = name.split(".")
+        assert names[0] == self.name
+        extent = self.full_extent
+        for name in names[1:]:
+            extent = extent.subextents[name]
+        return extent
+
+
+#
+# Extent
+#
+
+# An extent encapsulates the sequence of possible values for a dimension.
+
+class Extent:
+    def __init__(self, source):
+        self._dimension = None
+        self._scope = None
+        self.source = source # Template or Survey
+        self.name = None
+        self.superextent = None
+        self.subextents = {} # name -> Extent
+
+    def __repr__(self):
+        return "<{} {}>".format(self.__class__.__name__, self.full_name)
+
     @property
-    def full_domain(self):
-        return self.domains[""]
+    def dimension(self):
+        assert False, abstract_method_call(self, "dimension")
 
+    @property
+    def scope(self):
+        assert False, abstract_method_call(self, "scope")
 
-#
-# Sequence sources
-#
-
-# Sequence sources supply the range or value list for a domain. Sequence
-# sources can be configured with static ranges or value lists, or can use a
-# domain surveyer at runtime to determine the range or value list.
-
-class SequenceSource:
-    def __init__(self, parent_space):
-        self.space = parent_space
+    @property
+    def full_name(self):
+        assert False, abstract_method_call(self, "full_name")
 
     @runtime
-    def sequence(self, dynamic_graph, parent_element=None):
+    def sequence(self, dynamic_graph, element):
         assert False, abstract_method_call(self, "sequence")
 
-class EnumeratedSequenceSource(SequenceSource):
-    def __init__(self, parent_space, values):
-        super().__init__(parent_space)
-        self.values = values # Surveyer or template.
+    @runtime
+    def iterate(self, dynamic_graph, element):
+        assert False, abstract_method_call(self, "iterate")
+
+    def issubextent(self, other):
+        if self is other:
+            return True
+        elif self.superextent is not None:
+            if self.superextent.issubextent(other):
+                return True
+        return False
+
+
+class SequenceExtentMixin:
+    def __init__(self, *args, **kwargs): pass
 
     @runtime
-    def sequence(self, dynamic_graph, parent_element=None):
-        if parent_element is None:
-            parent_element = Element()
+    def raw_sequence(self, dynamic_graph, element):
+        assert False, abstract_method_call(self, "raw_sequence")
 
-        if isinstance(self.values, DomainSurveyer):
-            # Dynamic domain.
-            surveyer = dynamic_graph.runtime(self.values)
-            return surveyer.values(parent_element)
 
-        # Static domain.
-        rendered_values = parent_element.render_template(dynamic_graph,
-                                                         self.values)
-        return shlex.split(rendered_values)
-
-class RangeSequenceSource(SequenceSource):
-    def __init__(self, parent_space, rangeargs):
-        super().__init__(parent_space)
-        self.rangeargs = rangeargs # Surveyer or template.
-
+class EnumeratedExtentMixin(SequenceExtentMixin):
     @runtime
-    def sequence(self, dynamic_graph, parent_element=None):
-        if parent_element is None:
-            parent_element = Element()
+    def raw_sequence(self, dynamic_graph, element):
+        if isinstance(self.source, Survey):
+            assert isinstance(self.source, ValuesSurvey)
+            survey = dynamic_graph.runtime(self.source)
+            return survey.values(element)
 
-        if isinstance(self.rangeargs, DomainSurveyer):
-            # Dynamic domain.
-            surveyer = dynamic_graph.runtime(self.rangeargs)
-            values = surveyer.values(parent_element)
-            if isinstance(values, range):
-                return values
-            values = sorted(int(v) for v in values)
+        values_str = element.render_template(dynamic_graph, self.source)
+        return shlex.split(values_str)
 
-            if len(values) == 0:
-                return range(0)
 
-            if len(values) == 1:
-                return range(values[0], values[0] + 1)
+class ArithmeticExtentMixin(SequenceExtentMixin):
+    @runtime
+    def raw_sequence(self, dynamic_graph, element):
+        if isinstance(self.source, Survey):
+            assert isinstance(self.source, RangeSurvey)
+            survey = dynamic_graph.runtime(self.source)
+            return survey.range(element) # TODO Add error info.
 
-            start = values[0]
-            stop = values[-1] + 1
-            step = values[1] - values[0]
-            range_ = range(start, stop, step)
-            for ref, obs in zip(range_, values):
-                if obs != ref:
-                    raise ValueError("surveyed domain values do not "
-                                     "constitute a range")
-            return range_
-
-        # Static domain.
-        rendered_values = parent_element.render_template(dynamic_graph,
-                                                         self.values)
-        rangeargs = tuple(int(a) for a in rendered_values.split())
-        if len(rangeargs) not in range(1, 4):
-            raise ValueError("range template must expand to 1-3 integers")
+        rangeargs_str = element.render_template(dynamic_graph, self.source)
+        try:
+            rangeargs = tuple(int(a) for a in rangeargs_str.split())
+            assert len(rangeargs) in range(1, 4)
+        except:
+            raise ValueError("{}: range template must expand to 1-3 "
+                             "integers (got `{}')".
+                             format(self.full_name, rangeargs_str))
         return range(*rangeargs)
 
 
-#
-# Domain surveyer
-#
-
-# Domain surveyers dynamically determine a domain at runtime. They supply the
-# domain sequence source with either a range or a value list (converting a
-# value list into a range, if necessary, is the responsibility of the sequence
-# source).
-
-class DomainSurveyer(Vertex):
-    @runtime
-    def values(self, dynamic_graph, parent_element):
-        assert False, abstract_method_call(self, "values")
-
-
-class RangeCommandDomainSurveyer(DomainSurveyer):
-    def __init__(self, name, parent_space, command_template):
-        super().__init__(name, parent_space)
-        self.command_template = command_template
-
-
-class FilenamePatternDomainSurveyer(DomainSurveyer):
-    def __init__(self, name, parent_space, match_pattern_template,
-                 value_transform_template):
-        super().__init__(name, parent_space)
-        self.match_pattern_template = match_pattern_template
-        self.value_transform_template = value_transform_template
-
-
-#
-# Domain
-#
-
-# A domain represents a set of possible values along a dimension.
-
-class Domain:
-    def __init__(self, seq_source, dimension, name=None,
-                 parent_space=None):
-        self.seq_source = seq_source
-        self.dimension = dimension
-        if name is None:
-            assert isinstance(self, FullDomain)
-            name = ""
-        self.name = name
-        dimension.domains[name] = self
-        self.space = (parent_space if parent_space else Space())
-
-    def __repr__(self):
-        return "<{} {} of Dimension {}>".format(self.__class__.__name__,
-                                                self.name,
-                                                self.dimension.name)
-
-    @runtime
-    def iterate(self, dynamic_graph, parent_element=None):
-        assert False, abstract_method_call(self, "iterate")
-
-class FullDomain(Domain):
-    @runtime
-    def iterate(self, dynamic_graph, parent_element=None):
-        if parent_element is None:
-            parent_element = Element()
-        return iter(self.seq_source.sequence(dynamic_graph, parent_element))
-
-    def __repr__(self):
-        return "<{} of Dimension {}>".format(self.__class__.__name__,
-                                             self.dimension.name)
-
-class Subdomain(Domain):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        if self.space.ndims > 0:
-            if not self.space.is_subspace(self.full_domain.space):
-                raise ValueError("subdomain parent space must be subspace "
-                                 "of corresponding full domain parent space")
+class FullExtent(Extent, SequenceExtentMixin):
+    def __init__(self, dimension, scope, source):
+        super().__init__(source)
+        self._dimension = dimension
+        self._scope = scope
+        # TODO Check that self.dimension is not in self.scope.extents
 
     @property
-    def full_domain(self):
-        return self.dimension.full_domain
+    def dimension(self):
+        return self._dimension
 
-class SubsetDomain(Subdomain):
+    @property
+    def scope(self):
+        return self._scope
+
+    @property
+    def full_name(self):
+        return self.dimension.name
+
     @runtime
-    def iterate(self, dynamic_graph, parent_element=None):
-        if parent_element is None:
-            parent_element = Element()
+    def sequence(self, dynamic_graph, element):
+        self_runtime = dynamic_graph.runtime(self)
+        # raw_sequence() implemented by subclasses.
+        return self_runtime.raw_sequence(element)
 
-        parent_seq = self.full_domain.seq_source.sequence(dynamic_graph,
-                                                          parent_element)
-        if not isinstance(parent_seq, range):
-            parent_seq = frozenset(parent_seq) # Speed up.
-
-        for value in self.seq_source.sequence(dynamic_graph, parent_element):
-            if value not in parent_seq:
-                raise ValueError("value generated by subset domain surveyer "
-                                 "not in full domain of dimension")
-            yield value
-
-class SliceDomain(Subdomain):
     @runtime
-    def iterate(self, dynamic_graph, parent_element=None):
-        if parent_element is None:
-            parent_element = Element()
+    def iterate(self, dynamic_graph, element):
+        self_runtime = dynamic_graph.runtime(self)
+        return iter(self_runtime.sequence(element))
 
-        slicerange = self.seq_source.sequence(dynamic_graph, parent_element)
-        assert isinstance(slicerange, range)
 
-        if len(slicerange) == 0:
-            return iter(range(0))
+class EnumeratedFullExtent(FullExtent, EnumeratedExtentMixin):
+    pass
 
-        if len(slicerange) == 1:
-            slice = slice(slicerange[0], slicerange[0] + 1)
-        else:
-            slice = slice(slicerange[0], slicerange[-1] + 1,
-                          slicerange[1] - slicerange[0])
 
-        parent_seq = self.full_domain.seq_source.sequence(dynamic_graph,
-                                                          parent_element)
-        return iter(parent_seq[slice])
+class ArithmeticFullExtent(FullExtent, ArithmeticExtentMixin):
+    pass
 
+
+class Subextent(Extent):
+    def __init__(self, superextent, name, source):
+        super().__init__(source)
+        self.name = name
+        self.superextent = superextent
+        # TODO Check that self.scope is subspace of self.superextent.scope.
+
+    @property
+    def dimension(self):
+        return self.superextent.dimension
+
+    @property
+    def scope(self):
+        return self.superextent.scope
+
+    @property
+    def full_name(self):
+        return self.superextent.full_name + "." + self.name
+
+
+class SequenceSubextent(Subextent, SequenceExtentMixin):
+    @runtime
+    def sequence(self, dynamic_graph, element):
+        self_runtime = dynamic_graph.runtime(self)
+        return list(self_runtime.iterate(element))
+
+    @runtime
+    def iterate(self, dynamic_graph, element):
+        self_runtime = dynamic_graph.runtime(self)
+        super_runtime = dynamic_graph.runtime(self.superextent)
+        super_values = frozenset(super_runtime.sequence(element))
+        for value in self_runtime.raw_sequence(element):
+            if value not in super_values:
+                raise ValueError("value `{value}' generated by {sub} "
+                                 "not a member of {super}".
+                                 format(sub=self.full_name,
+                                        super=self.superextent.full_name,
+                                        value=value))
+                yield value
+
+
+class EnumeratedSubextent(SequenceSubextent, EnumeratedExtentMixin):
+    pass
+
+
+class ArithmeticSubextent(SequenceSubextent, ArithmeticExtentMixin):
+    pass
+
+
+class IndexedSubextent(Subextent):
+    @runtime
+    def slice(self, dynamic_graph, element):
+        if isinstance(self.source, Survey):
+            assert isinstance(self.source, SliceSurvey)
+            survey = dynamic_graph.runtime(self.source)
+            return survey.slice(element) # TODO Add error info.
+
+        sliceargs_str = element.render_template(dynamic_graph, self.source)
+        try:
+            sliceargs = tuple(int(a) for a in sliceargs_str.split())
+            assert len(sliceargs) in range(1, 4)
+        except:
+            raise ValueError("{}: slice template must expand to 1-3 "
+                             "integers (got `{}')".
+                             format(self.full_name, sliceargs_str))
+        return slice(*sliceargs)
+
+    @runtime
+    def sequence(self, dynamic_graph, element):
+        self_runtime = dynamic_graph.runtime(self)
+        super_runtime = dynamic_graph.runtime(self.superextent)
+        return super_runtime.sequence(element)[self_runtime.slice]
+
+    @runtime
+    def iterate(self, dynamic_graph, element):
+        self_runtime = dynamic_graph.runtime(self)
+        super_runtime = dynamic_graph.runtime(self.superextent)
+        slice_ = self_runtime.slice
+        sliceargs = (slice_.start, slice_.stop, slice_.step)
+        return itertools.islice(super_runtime.iterate(element), *sliceargs)
 
 
 #
 # Space and Element
 #
 
-# Each dataset or computation has an associated space, which is the outer
-# product space formed from the set of unidimensional spaces associated with
-# each dimension.
-
-# Dimensions with parents (i.e. dimensions whose domains depend on the selected
-# element in its parent dimensions) are expressed as dimensions that depend
-# on the selected element in the outer product space of the unidimensional
-# spaces associated with the parent dimensions.
-
 class Space:
-    def __init__(self, extent={}):
-        # extent: dimension -> tuple(domains)
-        self.extent = OrderedDict() # Dimension -> Domain
-        for dim, doms in extent.items():
-            for dom in doms:
-                assert dom.dimension is dim
-            self.extent[dim] = doms
+    def __init__(self, manifest_extents=[]):
+        manifest_dims = frozenset(extent.dimension
+                                  for extent in manifest_extents)
+        if len(manifest_extents) > len(manifest_dims):
+            raise ValueError("cannot create space with nonorthogonal extents")
+        self.manifest_extents = manifest_extents
 
-        # XXX make a topologically sorted dims list!
+        # Collect all the extents on which the manifest ones depend on.
+        # If extents for the same dimension are encountered (between the scopes
+        # of different manifest contingent extents or between the scope of
+        # a manifest contingent extent and one of the manifest extents), then
+        # they must be in a superextent-subextent relationship, and the
+        # subextent is adopted as the extent for the whole space.
+        extents_to_use = dict((extent.dimension, extent)
+                              for extent in self.manifest_extents)
+        for extent in self.manifest_extents:
+            for extent in extent.scope.extents:
+                dimension = extent.dimension
+                if dimension in extents_to_use:
+                    contending_extent = extents_to_use[dimension]
+                    if extent.issubextent(contending_extent):
+                        extents_to_use[dimension] = extent
+                        continue
+                    elif contending_extent.issubextent(extent):
+                        continue # Keep contending_extent for this dimension.
+                    raise ValueError("cannot create space with multiple "
+                                     "incompatible extents for the same "
+                                     "dimension: {}".format(manifest_extents))
+                else:
+                    extents_to_use[dimension] = extent
+
+        # Topologically sort the extents based on contingency relations.
+
+        # In order to preserve the order of the manifest extents (so that the
+        # user can specify the order of iteration), for each manifest extent M
+        # (in order), we "claim" any remaining implicit extents {I} on which M
+        # is contingent and place them to the left of M (preserving the
+        # already topologically-sorted order of {I}). At the same time, we
+        # make sure that the manifest extents are in fact topologically sorted.
+        all_dims = set(extents_to_use.keys())
+        implicit_dims = all_dims - manifest_dims
+        sorted_extents = []
+        checked_dimensions = set() # Dimensions represented in sorted_extents.
+        for manifest_extent in self.manifest_extents:
+            if manifest_extent.dimension in checked_dimensions:
+                raise ValueError("cannot create space with extents that are "
+                                 "not topologically sorted")
+            for e in manifest_extent.scope.extents:
+                d = e.dimension
+                if d in implicit_dims:
+                    implicit_dims.remove(d)
+                    sorted_extents.append(extents_to_use[d])
+                    checked_dimensions.add(d)
+            sorted_extents.append(extents_to_use[manifest_extent.dimension])
+            checked_dimensions.add(manifest_extent.dimension)
+        
+        self.extents = sorted_extents
 
     def __repr__(self):
-        dims = ("{}.{}".
-                format(dim.name, "|".join(dom.name for dom in doms)).
-                rstrip(".")
-                for dim, doms in self.extent.items())
-        return "<Space [{}]>".format(", ".join(dims))
+        return "<Space [{}]>".format(", ".join(e.full_name
+                                               for e in self.extents))
 
     @property
     def ndims(self):
-        return len(self.extent)
+        return len(self.extents)
 
     @property
     def dimensions(self):
-        return self.extent.keys()
+        return list(e.dimension for e in self.extents)
+
+    def __getitem__(self, dimension):
+        for extent in self.extents:
+            if extent.dimension is dimension:
+                return extent
+        raise KeyError("{} not in {}".format(dimension, self))
+
+    def canonical_element(self, element, require_full=False):
+        if element.space is self:
+            return element
+
+        assigned_extents = []
+        coords = {}
+        for extent in self.extents:
+            if extent.dimension not in element.space.dimensions:
+                if require_full:
+                    raise ValueError("{} is not an element of {}".
+                                     format(element, self))
+                continue
+            if not element.space[extent.dimension].issubextent(extent):
+                raise ValueError("{} of {} is not subextent of {} of {}".
+                                 format(element.space[extent.dimension],
+                                        element, extent, self))
+            assigned_extents.append(extent)
+            coords[extent.dimension] = element[extent.dimension]
+        return Element(Space(assigned_extents), coords)
 
     @runtime
-    def iterate(self, dynamic_graph, parent_element=None):
-        if parent_element is None:
-            parent_element = Element()
+    def iterate(self, dynamic_graph, element=None):
+        if element is None:
+            element = Element()
 
-        # Sanity check: TODO Remove.
-        for dim in parent_element.space.dimensions:
-            assert dim not in self.dimensions
-
-        # Yield all elements of the space in order.
-        if not len(self.extent):
-            if parent_element.space.ndims > 0:
-                yield parent_element
+        # Scan consecutive dimensions assigned a value by element.
+        assigned_extents = []
+        base_coords = {}
+        i = -1
+        for i, extent in enumerate(self.extents):
+            if extent.dimension in element.space.dimensions:
+                if not element.space[extent.dimension].issubextent(extent):
+                    raise ValueError("{} of {} is not subextent of {} of {}".
+                                     format(element.space[extent.dimension],
+                                            element, extent, self))
+                assigned_extents.append(extent)
+                base_coords[extent.dimension] = element[extent.dimension]
             else:
-                yield Element()
+                break
+
+        if len(assigned_extents) == self.ndims:
+            # Element assigned coordinates to all of our dimensions.
+            element = self.canonical_element(element)
+            dprint(self, "iterate() yielding", element)
+            yield element
             return
 
-        # The dimension to iterate along: the first dimension.
-        extent_items = list(self.extent.items())
-        dimension, domains = extent_items[0]
+        # We will iterate over the first unassigned extent.
+        extent_to_iterate = self.extents[len(assigned_extents)]
+        assigned_extents.append(extent_to_iterate)
 
-        # Extend the parent space with the first dimension.
-        new_parent_space = (parent_element.space.
-                            space_by_adding_dimension(dimension, domains))
-        for coord in zip(*(dom.iterate(dynamic_graph, parent_element)
-                           for dom in domains)):
-            coords = parent_element.coordinates.copy()
-            coords[dimension] = coord
-            element = Element(new_parent_space, coords)
+        # Scan remaining (nonconsecutive) dimensions assigned by element.
+        for extent in self.extents[len(assigned_extents):]:
+            if extent.dimension in element.space.dimensions:
+                if not element.space[extent.dimension].issubextent(extent):
+                    raise ValueError("{} of {} is not subextent of {} of {}".
+                                     format(element.space[extent.dimension],
+                                            element, extent, self))
+                assigned_extents.append(extent)
+                base_coords[extent.dimension] = element[extent.dimension]
 
-            remaining_space = Space(OrderedDict(extent_items[1:]))
-            for full_element in remaining_space.iterate(dynamic_graph,
-                                                        element):
-                yield full_element
-
-    def space_by_adding_dimension(self, dimension, domains):
-        extent = self.extent.copy()
-        extent[dimension] = domains
-        return Space(extent)
-
-    def quotient_space(self, other):
-        quotient_domains = OrderedDict()
-        for dim in numer.extent:
-            if dim in denom.extent:
-                assert len(numer.extent[dim]) == len(denom.extent[dim])
-                continue
-            quotient_domains[dim] = numer.extent[dim]
-        return self.__class__(quotient_domains)
-
-    def is_compatible_space(self, other):
-        warnings.warn("TODO: Space.is_compatible_space")
-        return True # TODO
-
-    def is_subspace(self, other):
-        # Return True if self is subspace of other.
-        # Need to determine how to handle domain-domain relationships.
-        warnings.warn("TODO: Space.is_subspace")
-        return True # TODO
+        for value in dynamic_graph.runtime(extent_to_iterate).iterate(element):
+            base_coords[extent_to_iterate.dimension] = value
+            new_element = Element(Space(assigned_extents), base_coords)
+            yield from dynamic_graph.runtime(self).iterate(new_element)
 
 
 class Element:
-    # An immutable "vector" (or "point") in a Space.
     def __init__(self, space=Space(), coordinates=dict()):
         self.space = space
-        # XXX
-        self.coordinates = dict((dim, coordinates[dim])
-                                for dim in self.space.dimensions)
+        self.coordinates = {}
+        for extent in self.space.extents:
+            dim = extent.dimension
+            if dim in coordinates:
+                self.coordinates[dim] = coordinates[dim]
+                continue
+            assert False, ("attempt to construct incomplete Element for {}: "
+                           "coordinates: {}".format(space, coordinates))
+
+    def __getitem__(self, dimension):
+        return self.coordinates[dimension]
 
     def __hash__(self):
-        # XXX
         return hash(tuple(self.coordinates[dim]
                           for dim in self.space.dimensions))
 
     def __eq__(self, other):
-        # XXX
         self_tuple = tuple(self.coordinates[dim]
                            for dim in self.space.dimensions)
         other_tuple = tuple(other.coordinates[dim]
@@ -632,45 +740,18 @@ class Element:
         return self_tuple == other_tuple
 
     def __repr__(self):
-        # XXX WRONG need parent domains
-        dims = ("{}.{}".
-                format(dim.name, "|".join(dom.name for dom in doms)).
-                rstrip(".")
-                for dim, doms in self.space.extent.items())
-        coords = (self.coordinates[dim] for dim in self.space.dimensions)
-        return "<Element [{}]>".format(", ".join("{} = {}".format(dim, coord)
-                                               for dim, coord
-                                               in zip(dims, coords)))
+        coords = ("{}={}".format(extent.full_name, self[extent.dimension])
+                  for extent in self.space.extents)
+        return "<Element [{}]>".format(", ".join(coords))
 
     def as_dict(self):
-        # XXX
-        dict_ = {}
-        for dimension in self.space.dimensions:
-            for i, domain in enumerate(self.space.extent[dimension]):
-                if isinstance(domain, FullDomain):
-                    key = dimension.name
-                else:
-                    key = "{}.{}".format(dimension.name, domain.name)
-                dict_[key] = self.coordinates[dimension][i]
-        return dict_
+        return dict((dim.name, self[dim]) for dim in self.space.dimensions)
 
     @runtime
-    def filename_expander(self, dynamic_graph):
-        def expander(dataset_name, extra_coords):
-            dataset = dynamic_graph.vertex_by_name(dataset_name, Dataset)
-            return self.render_template(dynamic_graph,
-                                        dataset.filename_template,
-                                        extra_names=extra_coords)
-        return expander
-
-    @runtime
-    def render_template(self, dynamic_graph, template,
-                        expand_datasets=False, extra_names={}):
+    def render_template(self, dynamic_graph, template, extra_names={}):
         dict_ = self.as_dict().copy()
         dict_.update(extra_names)
-        expander = (self.filename_expander(dynamic_graph)
-                    if expand_datasets else None)
-        rendition = template.render(dict_, expander)
+        rendition = template.render(dict_)
         return rendition
 
 
@@ -679,13 +760,13 @@ class Element:
 #
 
 class Dataset(Vertex):
-    def __init__(self, name, space, filename_template):
-        super().__init__(name, space)
+    def __init__(self, name, scope, filename_template):
+        super().__init__(name, scope)
         self.filename_template = filename_template
 
 class Computation(Vertex):
-    def __init__(self, name, space, command_template, parallel=False):
-        super().__init__(name, space)
+    def __init__(self, name, scope, command_template, parallel=False):
+        super().__init__(name, scope)
         self.command_template = command_template
         self.parallel = parallel
 

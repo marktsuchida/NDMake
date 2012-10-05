@@ -4,7 +4,8 @@ filename: single_input_file.dat
 
 [compute produce_unknown_number_of_files]
 inputs: single_input_file
-command: transform_to_many {{single_input_file}} {{" ".join(many_output_files)}}
+command: transform_to_many {{single_input_file}} {{many_output_files|dirname}} \
+    --prefix=output_ --suffix=.dat --digits=4
 
 [dataset many_output_files]
 producer: produce_unknown_number_of_files
@@ -13,7 +14,7 @@ filename: output_{{"%04d"|format(SEQ_NUM)}}.dat
 
 [dimension SEQ_NUM]
 dataset: many_output_files
-match: output_(?P<value>\d\d\d\d).dat
+match: output_(\d\d\d\d).dat
 transform: {{int(value)}}
 
 # Graph is input -> produce_unknown_number_of_files ->

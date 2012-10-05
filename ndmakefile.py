@@ -1,9 +1,13 @@
 from collections import OrderedDict
 import collections
 import configparser
+import functools
 
 import depgraph
 import template
+import debug
+
+dprint = debug.dprint_factory(__name__, True)
 
 # Parse an ndmake input file (an ndmakefile).
 #
@@ -14,14 +18,6 @@ import template
 # sorted before being transformed into a dependency graph (depgraph.StaticGraph
 # and associated objects), so that we do not need to introduce placeholders in
 # the depgraph.
-
-
-DEBUG = True
-if DEBUG:
-    def dprint(*args):
-        print("ndmakefile: {}:".format(args[0]), *args[1:])
-else:
-    def dprint(*args): pass
 
 
 Section = collections.namedtuple("Section", ("kind", "name", "entries"))
@@ -63,6 +59,8 @@ class NDMakefile:
         parser.read_file(file)
         self.add_sections(parser)
         self.check_for_missing_sections()
+        if debug.DEBUG:
+            self.write_section_graphviz("sections.dot")
         self.topologically_sort_sections()
         self.parse_sorted_sections()
 
@@ -104,27 +102,18 @@ class NDMakefile:
     def add_edge(self, parent, child):
         self.edges.append((parent, child))
 
-    def check_scope(self, scope_specification, *, allow_multi_domain=False):
+    def check_scope(self, scope_specification):
         # Yield (kind, name) where kind in ("dimension", "subdomain").
         # Full domains are yielded as "dimension"; subdomains as "subdomain".
         dims_and_doms = scope_specification.split()
         for dim_or_dom in dims_and_doms:
-            dim_dom = dim_or_dom.split(".")
+            dim_dom = dim_or_dom.split(".", 1)
             if len(dim_dom) == 1:
                 yield ("dimension", dim_dom[0])
             elif len(dim_dom) == 2:
-                if not len(dim_dom[1]):
+                if not len(dim_dom[0]) or not len(dim_dom[1]):
                     raise SyntaxError("invalid dimension specification")
-                doms = dim_dom[1].split("|")
-                if not allow_multi_domain and len(doms) != 1:
-                    raise SyntaxError("invalid dimension specification")
-                for dom in doms:
-                    if dom == "":
-                        yield ("dimension", dim_dom[0])
-                    else:
-                        yield ("subdomain", "{}.{}".format(dim_dom[0], dom))
-            else:
-                raise SyntaxError("invalid dimension specification")
+                yield ("subdomain", dim_or_dom)
 
     def add_global_section(self, name, entries):
         if name is None:
@@ -156,15 +145,14 @@ class NDMakefile:
         remaining_keys = set(entries.keys())
 
         # Dimensions depend on the dimensions or domains of the parent scope.
-        remaining_keys.discard("parents")
+        remaining_keys.discard("given")
         try:
-            for dim_or_dom in self.check_scope(entries.get("parents", "")):
+            for dim_or_dom in self.check_scope(entries.get("given", "")):
                 self.add_edge(dim_or_dom, ("dimension", name))
         except SyntaxError as e:
-            raise SyntaxError("parents: " + e.message, "dimension", name)
+            raise SyntaxError("given: " + e.message, "dimension", name)
         
-        mode_keys = ("values", "range", "values_command", "range_command",
-                     "match")
+        mode_keys = ("values", "range", "command", "range_command", "match")
         mode_key_count = 0
         for key in mode_keys:
             if key in remaining_keys:
@@ -179,7 +167,7 @@ class NDMakefile:
                               "dimension", name)
 
         # Command-based surveyed dimensions optionally depend on a dataset.
-        if mode in ("values_command", "range_command"):
+        if mode in ("command", "range_command"):
             if "input" in remaining_keys:
                 remaining_keys.remove("input")
                 self.add_edge(("dataset", entries["input"]),
@@ -204,25 +192,28 @@ class NDMakefile:
     def add_subdomain_section(self, name, entries):
         self.add_section("subdomain", name, entries)
 
-        # Subdomains depend on their dimension.
-        dim_dom = name.split(".")
-        if len(dim_dom) != 2:
+        # Subdomains depend on their superdomains.
+        split_name = name.split(".")
+        super_name = ".".join(split_name[:-1])
+        if not super_name:
             raise SyntaxError("invalid name", "subdomain", name)
-        dimension = dim_dom[0]
-        self.add_edge(("dimension", dimension),
-                      ("subdomain", name))
+        if len(split_name) > 2:
+            super_section = ("subdomain", super_name)
+        else:
+            super_section = ("dimension", super_name)
+        self.add_edge(super_section, ("subdomain", name))
 
         remaining_keys = set(entries.keys())
 
         # Subdomains depend on the dimensions or domains of the parent scope.
-        remaining_keys.discard("parents")
+        remaining_keys.discard("given")
         try:
-            for dim_or_dom in self.check_scope(entries.get("parents", "")):
+            for dim_or_dom in self.check_scope(entries.get("given", "")):
                 self.add_edge(dim_or_dom, ("subdomain", name))
         except SyntaxError as e:
-            raise SyntaxError("parents: " + e.message, "subdomain", name)
+            raise SyntaxError("given: " + e.message, "subdomain", name)
         
-        mode_keys = ("values", "range", "slice", "values_command",
+        mode_keys = ("values", "range", "slice", "command",
                      "range_command", "slice_command", "match")
         mode_key_count = 0
         for key in mode_keys:
@@ -238,7 +229,7 @@ class NDMakefile:
                               "subdomain", name)
 
         # Command-based surveyed subdomains optionally depend on a dataset.
-        if mode in ("values_command", "range_command", "slice_command"):
+        if mode in ("command", "range_command", "slice_command"):
             if "input" in remaining_keys:
                 remaining_keys.remove("input")
                 self.add_edge(("dataset", entries["input"]),
@@ -270,13 +261,12 @@ class NDMakefile:
         remaining_keys.discard("filename")
 
         # Datasets depend on the dimensions or domains of their scope.
-        remaining_keys.discard("dimensions")
+        remaining_keys.discard("scope")
         try:
-            for dim_or_dom in self.check_scope(entries.get("dimensions", ""),
-                                               allow_multi_domain=True):
+            for dim_or_dom in self.check_scope(entries.get("scope", "")):
                 self.add_edge(dim_or_dom, ("dataset", name))
         except SyntaxError as e:
-            raise SyntaxError("dimensions: " + e.message, "dataset", name)
+            raise SyntaxError("scope: " + e.message, "dataset", name)
 
         # Datasets optionally depend on a producer compute.
         if "producer" in remaining_keys:
@@ -302,13 +292,12 @@ class NDMakefile:
         remaining_keys.discard("command")
 
         # Computes depend on the dimensions or domains of their scope.
-        remaining_keys.discard("dimensions")
+        remaining_keys.discard("scope")
         try:
-            for dim_or_dom in self.check_scope(entries.get("dimensions", ""),
-                                               allow_multi_domain=True):
+            for dim_or_dom in self.check_scope(entries.get("scope", "")):
                 self.add_edge(dim_or_dom, ("compute", name))
         except SyntaxError as e:
-            raise SyntaxError("dimensions: " + e.message, "compute", name)
+            raise SyntaxError("scope: " + e.message, "compute", name)
 
         # Computes optionally depend on input datasets.
         remaining_keys.discard("input")
@@ -331,6 +320,19 @@ class NDMakefile:
             for section in (parent, child):
                 if section not in self.sections:
                     raise ConsistencyError("missing", section[0], section[1])
+
+    def write_section_graphviz(self, filename):
+        def vertex_id(section):
+            return ".".join(section).replace(".", "__")
+        with open(filename, "w") as file:
+            fprint = functools.partial(print, file=file)
+            fprint("digraph sections {")
+            for section in self.sections:
+                fprint("{} [label=\"{}\"];".format(vertex_id(section),
+                                                   " ".join(section)))
+            for parent, child in self.edges:
+                fprint("{} -> {};".format(vertex_id(parent), vertex_id(child)))
+            fprint("}")
 
     def topologically_sort_sections(self):
         sorted_sections = []
@@ -367,31 +369,16 @@ class NDMakefile:
             section = self.sections[(kind, name)]
             getattr(self, "parse_{}_section".format(kind))(section)
 
-    def parse_scope(self, scope_specification):
-        # Return OrderedDict(Dimension -> tuple(Domain))
-        dims_and_doms = scope_specification.split()
-        scope = OrderedDict()
-        for dim_or_dom in dims_and_doms:
-            dim_dom = dim_or_dom.split(".")
-
-            dim = self.graph.dimensions[dim_dom[0]]
-            if dim in scope:
-                raise ConsistencyError("duplicate dimension specification")
-
-            if len(dim_dom) == 1:
-                domains = (dim.full_domain,)
-
-            elif len(dim_dom) == 2:
-                doms = dim_dom[1].split("|")
-                if len(doms) != len(set(doms)):
-                    raise ConsistencyError("duplicate domain specification")
-
-                domains = tuple((dim.domains[dom] if dom else dim.full_domain)
-                                for dom in doms)
-
-            scope[dim] = domains
-
-        return scope
+    def parse_extents(self, scope_specification):
+        # Return list(Extent)
+        extent_specs = scope_specification.split()
+        extents = []
+        for extent_spec in extent_specs:
+            dim_name = extent_spec.split(".", 1)[0]
+            dimension = self.graph.dimensions[dim_name]
+            extent = dimension.extent_by_name(extent_spec)
+            extents.append(extent)
+        return extents
 
     def parse_global_section(self, section):
         if "defs" in section.entries:
@@ -404,62 +391,73 @@ class NDMakefile:
         name = section.name
 
         try:
-            parent_scope = self.parse_scope(section.entries.get("parents", ""))
+            extents = self.parse_extents(section.entries.get("given", ""))
         except Error as e:
-            raise e.__class__("parents: " + e.message, section.kind, name)
-        parent_space = depgraph.Space(parent_scope)
+            raise e.__class__("given: " + e.message, section.kind, name)
+        scope = depgraph.Space(extents)
+
+        survey = None
 
         if "values" in section.entries:
-            subdomain_class = depgraph.SubsetDomain
+            classes = (depgraph.EnumeratedFullExtent,
+                       depgraph.EnumeratedSubextent)
             tmpl = new_template("__values_{}".format(name),
                                 section.entries["values"])
-            seq_source = depgraph.EnumeratedSequenceSource(parent_space, tmpl)
+            source = tmpl
 
         elif "range" in section.entries:
-            subdomain_class = depgraph.SubsetDomain
+            classes = (depgraph.ArithmeticFullExtent,
+                       depgraph.ArithmeticSubextent)
             tmpl = new_template("__range_{}".format(name),
                                 section.entries["range"])
-            seq_source = depgraph.RangeSequenceSource(parent_space, tmpl)
+            source = tmpl
 
         elif "slice" in section.entries:
             assert section.kind == "subdomain"
-            subdomain_class = depgraph.SliceDomain
+            classes = (None, depgraph.IndexedSubextent)
             tmpl = new_template("__slice_{}".format(name),
                                 section.entries["slice"])
-            seq_source = depgraph.RangeSequenceSource(parent_space, tmpl)
+            source = tmpl
 
-        elif "values_command" in section.entries:
-            subdomain_class = depgraph.SubsetDomain
+        elif "command" in section.entries:
+            classes = (depgraph.EnumeratedFullExtent,
+                       depgraph.EnumeratedSubextent)
             tmpl = new_template("__vcmd_{}".format(name),
-                                section.entries["values_command"])
-            surveyer = depgraph.ValuesCommandDomainSurveyer(name, parent_space,
-                                                            tmpl)
-            self.graph.add_vertex(surveyer)
-            seq_source = depgraph.EnumeratedSequenceSource(parent_space,
-                                                           surveyer)
+                                section.entries["command"])
+            if "transform" in section.entries:
+                tfm_tmpl = new_template("__tform_{}".format(name),
+                                        section.entries["transform"])
+            else:
+                tfm_tmpl = None
+            surveyer = depgraph.ValuesCommandSurveyer(scope, tmpl, tfm_tmpl)
+            survey = depgraph.ValuesSurvey(name, scope, surveyer)
+            self.graph.add_vertex(survey)
+            source = survey
 
         elif "range_command" in section.entries:
-            subdomain_class = depgraph.SubsetDomain
+            classes = (depgraph.ArithmeticFullExtent,
+                       depgraph.ArithmeticSubextent)
             tmpl = new_template("__rcmd_{}".format(name),
                                 section.entries["range_command"])
-            surveyer = depgraph.RangeCommandDomainSurveyer(name, parent_space,
-                                                           tmpl)
-            self.graph.add_vertex(surveyer)
-            seq_source = depgraph.RangeSequenceSource(parent_space, surveyer)
+            surveyer = depgraph.IntegerTripletCommandSurveyer(scope, tmpl)
+            survey = depgraph.RangeSurvey(name, scope, surveyer)
+            self.graph.add_vertex(survey)
+            source = survey
 
         elif "slice_command" in section.entries:
             assert section.kind == "subdomain"
-            subdomain_class = depgraph.SliceDomain
+            classes = (None, depgraph.IndexedSubextent)
             tmpl = new_template("__scmd_{}".format(name),
                                 section.entries["slice_command"])
-            surveyer = depgraph.RangeCommandDomainSurveyer(name, parent_space,
-                                                           tmpl)
-            self.graph.add_vertex(surveyer)
-            seq_source = depgraph.RangeSequenceSource(parent_space, surveyer)
+            surveyer = depgraph.IntegerTripletCommandSurveyer(scope, tmpl)
+            survey = depgraph.SliceSurvey(name, scope, surveyer)
+            self.graph.add_vertex(survey)
+            source = survey
 
         else:
             assert "match" in section.entries
-            subdomain_class = depgraph.SubsetDomain
+            classes = (depgraph.EnumeratedFullExtent,
+                       depgraph.EnumeratedSubextent)
             match_tmpl = new_template("__match_{}".format(name),
                                       section.entries["match"])
             if "transform" in section.entries:
@@ -467,32 +465,33 @@ class NDMakefile:
                                         section.entries["transform"])
             else:
                 tfm_tmpl = None
-            surveyer = depgraph.FilenamePatternDomainSurveyer(name,
-                                                              parent_space,
-                                                              match_tmpl,
-                                                              tfm_tmpl)
-            self.graph.add_vertex(surveyer)
-            seq_source = depgraph.EnumeratedSequenceSource(parent_space,
-                                                           surveyer)
+            surveyer = depgraph.FilenameSurveyer(scope, match_tmpl, tfm_tmpl)
+            survey = depgraph.ValuesSurvey(name, scope, surveyer)
+            self.graph.add_vertex(survey)
+            source = survey
             
         if "input" in section.entries:
             dataset = self.graph.vertex_by_name(section.entries["input"],
                                                 depgraph.Dataset)
-            self.graph.add_edge(dataset, surveyer)
+            self.graph.add_edge(dataset, survey)
 
         if "producer" in section.entries:
             compute = self.graph.vertex_by_name(section.entries["producer"],
                                                 depgraph.Computation)
-            self.graph.add_edge(compute, surveyer)
+            self.graph.add_edge(compute, survey)
 
         if section.kind == "dimension":
             dimension = depgraph.Dimension(name)
-            domain = depgraph.FullDomain(seq_source, dimension)
+            extent = classes[0](dimension, scope, source)
+            dimension.full_extent = extent
             self.graph.dimensions[name] = dimension
         else:
-            dim_name, dom_name = name.split(".")
+            dim_name = name.split(".", 1)[0]
             dimension = self.graph.dimensions[dim_name]
-            subdomain = subdomain_class(seq_source, dimension, dom_name)
+            superextent_name, extent_name = name.rsplit(".", 1)
+            superextent = dimension.extent_by_name(superextent_name)
+            extent = classes[1](superextent, extent_name, source)
+            superextent.subextents[extent_name] = extent
 
     def parse_dimension_section(self, section):
         self.parse_dimension_or_domain_section(section)
@@ -502,17 +501,17 @@ class NDMakefile:
 
     def parse_dataset_section(self, section):
         try:
-            scope = self.parse_scope(section.entries.get("dimensions", ""))
+            extents = self.parse_extents(section.entries.get("scope", ""))
         except Error as e:
-            raise e.__class__("dimensions: " + e.message,
+            raise e.__class__("scope: " + e.message,
                               "dataset", section.name)
-        space = depgraph.Space(scope)
+        scope = depgraph.Space(extents)
 
         tmpl = self.graph.templateset. \
                 new_template("__dataset_{}".format(section.name), 
                              section.entries["filename"])
 
-        dataset = depgraph.Dataset(section.name, space, tmpl)
+        dataset = depgraph.Dataset(section.name, scope, tmpl)
         self.graph.add_vertex(dataset)
 
         if "producer" in section.entries:
@@ -522,11 +521,11 @@ class NDMakefile:
 
     def parse_compute_section(self, section):
         try:
-            scope = self.parse_scope(section.entries.get("dimensions", ""))
+            extents = self.parse_extents(section.entries.get("scope", ""))
         except Error as e:
-            raise e.__class__("dimensions: " + e.message,
+            raise e.__class__("scope: " + e.message,
                               "computation", section.name)
-        space = depgraph.Space(scope)
+        scope = depgraph.Space(extents)
 
         tmpl = self.graph.templateset. \
                 new_template("__compute_{}".format(section.name), 
@@ -548,7 +547,7 @@ class NDMakefile:
             raise SyntaxError("invalid `parallel' specifier",
                               "compute", section.name)
 
-        compute = depgraph.Computation(section.name, space, tmpl, parallel)
+        compute = depgraph.Computation(section.name, scope, tmpl, parallel)
         self.graph.add_vertex(compute)
 
         for input in section.entries.get("input", "").split():

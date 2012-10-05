@@ -9,7 +9,6 @@ import types
 import warnings
 import weakref
 
-
 __doc__ = """Cooperative multitasking in pure Python, using coroutines."""
 
 
@@ -317,7 +316,8 @@ class _Kernel():
                     dprint(tasklet, "return value discarded:", return_value)
                 break
 
-            except: # Tasklet terminated abnormally.
+            except BaseException as e: # Tasklet terminated abnormally.
+                dprint(tasklet, "raised", e.__class__.__name__)
                 self.tasklets.remove(tasklet)
                 self.terminate_all()
                 raise

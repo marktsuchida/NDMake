@@ -27,15 +27,7 @@ class TemplateSet:
         e.filters["basename"] = os.path.basename
         e.filters["stripext"] = lambda p: os.path.splitext(p)[0]
         e.filters["fileext"] = lambda p: os.path.splitext(p)[1]
-
-        self.filename_expander = None
-        @jinja2.contextfunction
-        def filename(context, dataset_name, **extra_coords):
-            if self.filename_expander is None:
-                raise ValueError("filename function not allowed in this "
-                                 "template")
-            return self.filename_expander(dataset_name, extra_coords)
-        e.globals["filename"] = filename
+        # TODO e.filters["shesc"]
 
         self.environment = e
 
@@ -67,13 +59,7 @@ class Template:
             self.params = jinja2.meta.find_undeclared_variables(ast)
         return self.params
 
-    def render(self, dict_, filename_expander=None):
-        save_expander = self.templateset.filename_expander
-        self.templateset.filename_expander = filename_expander
-
-        tmpl_impl = self.environment.get_template(self.name)
-        rendition = tmpl_impl.render(dict_)
-
-        self.templateset.filename_expander = save_expander
-        return rendition
+    def render(self, dict_):
+        tmpl = self.environment.get_template(self.name)
+        return tmpl.render(dict_)
 

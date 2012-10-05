@@ -8,8 +8,8 @@
 # line continuation and {{" "}} to include a space at the beginning or end of a
 # line.
 
-# Non-template fields: parents, domain_source, scope, parallel, input,
-# producer, barrier (all others are template-valued).
+# Non-template fields: given, scope, parallel, input, producer, barrier (all
+# others are template-valued).
 #
 # (Note: worry about barrier later; we do not needed for the initial
 # implementation.)
@@ -18,12 +18,8 @@
 # Add {% import '...' as g %} to beginning of all templates (except the global
 # defs itself).
 
-# Special functions:
-# filename("dataset", **params) # Implement as a contextfunction; add to
-# environment's globals
-
 # Special filters: dirname(filename), basename(filename), stripext(filename),
-# fileext(filename) # add to environment's filters
+# fileext(filename), shesc() # add to environment's filters
 
 
 # The name ("data_params" here) is optional and not used but allows multiple
@@ -50,7 +46,7 @@ values: S1378_1
 range: {{len(g.iterations)}}
 
 [dimension ITERATION]
-parents: RESOLUTION
+given: RESOLUTION
 range: {{g.iterations[RESOLUTION]}}
 
 [dataset input_metadata]
@@ -58,11 +54,11 @@ scope: EXPERIMENT
 filename: input/symlinks/{{EXPERIMENT}}/metadata.txt
 
 [dimension FRAME]
-parents: EXPERIMENT
+given: EXPERIMENT
 input: input_metadata
 range_command: echo 100 # XXX Temporary, of course.
-# Instead of range_command, values_command or match + transform can be used.
-# Output of range_command or values_command is shlex'ed.
+# Instead of range_command, command or match + transform can be used.
+# Output of range_command or command is shlex'ed.
 #
 # match: template expanding into regular expression, with named
 # subpattern: (?P<value>...) [allow unnamed if only one group appears in re]
@@ -99,31 +95,11 @@ filename: compute/glass-refframe/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.tif
 
 [subdomain FRAME.selection]
 range:
- {% set moving_range g.moving_range[EXPERIMENT]  -%}
- {% set start moving_range[0]                    -%}
- {% set stop moving_range[1] - g.demons_interval -%}
- {{start}} {{stop}}
-
-[subdomain FRAME.after]
-range:
- {% set moving_range g.moving_range[EXPERIMENT]   -%}
- {% set start moving_range[0] + g.demons_interval -%}
- {% set stop moving_range[1]                      -%}
- {{start}} {{stop}}
+ {% set moving_range g.moving_range[EXPERIMENT] -%}
+ {{moving_range[0]}} {{moving_range[1] - g.demons_interval}}
 
 [compute perframe_deform]
-# This usage requires that FRAME.selection and FRAME.after have the exact
-# same number of values. When this form is used, FRAME is not a simple variable
-# but an object with the attributes FRAME.selection and FRAME.after.
-# Normally, the name of a dataset is a variable containing the current filename
-# for that dataset (equivalent to filename("dsetname")). When multiple
-# subdomains are in use, the filename() construction is obligatory.
-# Further, when an input or output is a strict superspace of the computation, a
-# dataset name has list value; in this case dsetname[n] can be used, but to
-# refer to a single filename by parameter values, filename("dsetname",
-# **kwargs) can be used. The filename() function returns a list if any params
-# remain unspecified. Default kwargs to filename() are the current params.
-scope: FRAME.selection|after
+scope: FRAME.selection
 parallel: 4
 input: glass_refframe
 command: demons \
@@ -134,8 +110,12 @@ command: demons \
      -maximum_step_length=0.6 \
      -displacement_field_sigma=1.8 \
      -update_field_sigma=0.0 \
-     {{filename("glass_refframe", FRAME=FRAME.selection)}} \
-     {{filename("glass_refframe", FRAME=FRAME.after)}}
+     {{glass_refframe}} \
+     {{glass_refframe(FRAME=int(FRAME) + g.demons_interval)}}
+# Each dataset name is an object with __str__() and __call__(*, **kwargs).
+# This can be used in various ways (e.g. glass_refframe(FRAME=0)).
+# kwargs defaults to the current iteration element, and the value of
+# __call__() is a list if the element ends up being partially specified.
 
 [dataset iter_defo_field]
 scope: FRAME.selection ITERATION
@@ -154,13 +134,13 @@ producer: get_final_field
 filename: compute/field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
 
 [compute deform_moving_image]
-scope: FRAME.selection|after
+scope: FRAME.selection
 input: unmasked_field glass_refframe
 parallel: yes
 command: python apply_field.py \
-     {{filename("unmasked_field", FRAME=FRAME.selection}} \
-     {{filename("glass_refframe", FRAME=FRAME.after)}} \
-     {{filename("registered_image", FRAME=FRAME.selection}}
+    {{unmasked_field}} \
+    {{glass_refframe(FRAME=int(FRAME) + g.demons_interval)}} \
+    {{registered_image}}
 
 [dataset registered_image]
 scope: FRAME.selection

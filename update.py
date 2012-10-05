@@ -4,6 +4,9 @@ import dispatch
 import os.path
 import shlex
 import time
+import debug
+
+dprint = debug.dprint_factory(__name__, True)
 
 # Traverse a depgraph to bring a vertex (or set of vertices) up to date.
 #
@@ -37,11 +40,11 @@ import time
 # - If the vertex is a Dataset with no parent (a source vertex), each element
 #   is checked to ensure all files are present. If the vertex is a Dataset with
 #   a producer, nothing is done.
-# - If the vertex is a DomainSurveyer, action depends on the specific type of
-#   the surveyer. For command surveyers (range or values), the command is run
-#   and the result is cached (XXX and written to a file?). For filename pattern
-#   surveyers, filename pattern matching is performed (with consideration of
-#   the timestamp of the parent Computation, if any) and the result is cached.
+# - If the vertex is a Survey, action depends on the specific type of the
+#   survey. For command surveys, the command is run and the result is cached
+#   (XXX and written to a file?). For filename surveys, filename pattern
+#   matching is performed (with consideration of the timestamp of the parent
+#   Computation, if any) and the result is cached.
 #
 # The following modifiers can be applied to the standard update action.
 # - ignore_errors: If True, non-zero command exit statuses are ignored. Checks
@@ -60,14 +63,6 @@ import time
 #
 # In the implementation, the standard and dry-run action tasklets are combined
 # as they share a considerable portion of code.
-
-
-DEBUG = True
-if DEBUG:
-    def dprint(*args):
-        print("update: {}:".format(args[0]), *args[1:])
-else:
-    def dprint(*args): pass
 
 
 # A constant representing a "valid" time-since-epoch value.
@@ -146,8 +141,9 @@ class Update:
         decorator_map = OrderedDict()
         decorator_map[depgraph.Dataset] = DatasetUpdateRuntime
         decorator_map[depgraph.Computation] = ComputationUpdateRuntime
-        decorator_map[depgraph.RangeCommandDomainSurveyer] = \
-                RangeCommandDomainSurveyerRuntime
+        decorator_map[depgraph.ValuesSurvey] = ValuesSurveyUpdateRuntime
+        decorator_map[depgraph.RangeSurvey] = RangeSurveyUpdateRuntime
+        decorator_map[depgraph.SliceSurvey] = SliceSurveyUpdateRuntime
         decorator_map[depgraph.Vertex] = VertexUpdateRuntime
         decorator_map[...] = depgraph.RuntimeDecorator
 
@@ -273,17 +269,11 @@ class DatasetUpdateRuntime(VertexUpdateRuntime):
         return newest_mtime
 
     def check_file_stats(self, element=depgraph.Element()):
+        element = self.scope.canonical_element(element)
         if element not in self.file_stats_cache:
-            # XXX Actually, need to allow parent space elements, too.
-            assert element.space.is_compatible_space(self.space)
-            # TODO The element may need to be canonicalized.
-
             oldest, newest = MAX_TIME, 0
-            space = self.graph.runtime(self.space)
-            dprint("check_file_stats space", space)
-            dprint("check_file_stats element", element)
-            for full_element in space.iterate(element):
-                dprint("check_file_stats full_element", full_element)
+            scope = self.graph.runtime(self.scope)
+            for full_element in scope.iterate(element):
                 if full_element in self.file_stats_cache:
                     old, new = self.file_stats_cache[full_element]
                     if (old, new) == (0, MAX_TIME):
@@ -307,13 +297,13 @@ class DatasetUpdateRuntime(VertexUpdateRuntime):
             self.file_stats_cache[element] = (oldest, newest)
 
     def oldest_mtime(self, element=depgraph.Element()):
-        # The element must be in a valid subspace of the dataset's space.
+        # The element must be in a valid subspace of the dataset's scope.
         # If files are missing, 0 is returned.
         self.check_file_stats(element)
         return self.file_stats_cache[element][0]
 
     def newest_mtime(self, element=depgraph.Element()):
-        # The element must be in a valid subspace of the dataset's space.
+        # The element must be in a valid subspace of the dataset's scope.
         # If files are missing, a large number is returned.
         self.check_file_stats(element)
         return self.file_stats_cache[element][1]
@@ -325,14 +315,14 @@ class ComputationUpdateRuntime(VertexUpdateRuntime):
 
     @dispatch.tasklet
     def update_all_elements(self, **options):
-        for element in self.space.iterate(self.graph):
+        for element in self.scope.iterate(self.graph):
             if self.is_element_locally_up_to_date(element):
                 continue
             raise NotUpToDateException(self) # XXX For now.
 
     def is_element_locally_up_to_date(self, element):
-        # The element must belong to our space.
-        assert element.space.is_compatible_space(self.space)
+        # The element must belong to our scope.
+        assert element.scope.is_compatible_space(self.scope)
         inputs = self.graph.parents_of(self)
         outputs = self.graph.children_of(self)
         newest_input_mtime = (max(input.newest_mtime(element)
@@ -344,19 +334,12 @@ class ComputationUpdateRuntime(VertexUpdateRuntime):
         return newest_input_mtime < oldest_output_mtime
 
 
-class RangeCommandDomainSurveyerRuntime(VertexUpdateRuntime):
-    def __init__(self, graph, surveyer):
-        super().__init__(graph, surveyer)
+class ValuesSurveyUpdateRuntime(VertexUpdateRuntime):
+    pass
 
-        self.cached_rangeargs = {} # Element -> rangeargs
+class RangeSurveyUpdateRuntime(VertexUpdateRuntime):
+    pass
 
-    @dispatch.tasklet
-    def update_all_elements(self, **options):
-        for element in self.space.iterate():
-            # TODO Run command and cache result.
-            rangeargs = shlex.split("0 100") # XXX
-            self.cached_rangeargs[element] = rangeargs
-
-    def values(self, element):
-        return self.cached_rangeargs[element]
+class SliceSurveyUpdateRuntime(VertexUpdateRuntime):
+    pass
 
