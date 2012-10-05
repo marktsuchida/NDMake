@@ -9,6 +9,8 @@ import sys
 with open(sys.argv[1]) as file:
     graph = ndmakefile.NDMakefile(file).graph
 
+graph.write_graphviz("deps.dot")
+
 updater = update.Update(graph)
 try:
     dispatch.start_with_tasklet(updater.update_vertices(graph.sinks()))

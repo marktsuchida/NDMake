@@ -60,7 +60,7 @@ class NDMakefile:
         self.add_sections(parser)
         self.check_for_missing_sections()
         if debug.DEBUG:
-            self.write_section_graphviz("sections.dot")
+            self.write_sections_graphviz("sections.dot")
         self.topologically_sort_sections()
         self.parse_sorted_sections()
 
@@ -205,14 +205,6 @@ class NDMakefile:
 
         remaining_keys = set(entries.keys())
 
-        # Subdomains depend on the dimensions or domains of the parent scope.
-        remaining_keys.discard("given")
-        try:
-            for dim_or_dom in self.check_scope(entries.get("given", "")):
-                self.add_edge(dim_or_dom, ("subdomain", name))
-        except SyntaxError as e:
-            raise SyntaxError("given: " + e.message, "subdomain", name)
-        
         mode_keys = ("values", "range", "slice", "command",
                      "range_command", "slice_command", "match")
         mode_key_count = 0
@@ -321,7 +313,7 @@ class NDMakefile:
                 if section not in self.sections:
                     raise ConsistencyError("missing", section[0], section[1])
 
-    def write_section_graphviz(self, filename):
+    def write_sections_graphviz(self, filename):
         def vertex_id(section):
             return ".".join(section).replace(".", "__")
         with open(filename, "w") as file:
@@ -390,11 +382,18 @@ class NDMakefile:
 
         name = section.name
 
-        try:
-            extents = self.parse_extents(section.entries.get("given", ""))
-        except Error as e:
-            raise e.__class__("given: " + e.message, section.kind, name)
-        scope = depgraph.Space(extents)
+        if section.kind == "dimension":
+            try:
+                extents = self.parse_extents(section.entries.get("given", ""))
+            except Error as e:
+                raise e.__class__("given: " + e.message, section.kind, name)
+            scope = depgraph.Space(extents)
+        else:
+            assert section.kind == "subdomain"
+            dimension = self.graph.dimensions[name.split(".", 1)[0]]
+            superextent_name, extent_name = name.rsplit(".", 1)
+            superextent = dimension.extent_by_name(superextent_name)
+            scope = superextent.scope
 
         survey = None
 
@@ -486,10 +485,6 @@ class NDMakefile:
             dimension.full_extent = extent
             self.graph.dimensions[name] = dimension
         else:
-            dim_name = name.split(".", 1)[0]
-            dimension = self.graph.dimensions[dim_name]
-            superextent_name, extent_name = name.rsplit(".", 1)
-            superextent = dimension.extent_by_name(superextent_name)
             extent = classes[1](superextent, extent_name, source)
             superextent.subextents[extent_name] = extent
 

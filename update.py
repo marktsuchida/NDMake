@@ -106,6 +106,8 @@ def multiplex(trigger_chan, notification_request_chan):
             notification_chans.append(notification_chan)
 
     message = yield dispatch.Recv(trigger_chan)
+    dprint("tid {}".format((yield dispatch.GetTid())),
+           "fired with message:", message)
 
     for notification_chan in notification_chans:
         yield dispatch.Send(notification_chan, message, block=False)
@@ -115,6 +117,8 @@ def multiplex(trigger_chan, notification_request_chan):
 
     while True:
         notification_chan = yield dispatch.Recv(notification_request_chan)
+        dprint("tid {}".format((yield dispatch.GetTid())),
+               "post-hoc message:", message)
         yield dispatch.Send(notification_chan, message, block=False)
 
 
@@ -123,6 +127,8 @@ def demultiplex(trigger_chans, signal_combiner=max):
     trigger_chan_set = set(trigger_chans)
     if trigger_chan_set is trigger_chans: # Just in case we were given a set.
         trigger_chan_set = trigger_chan_set.copy()
+
+    yield dispatch.SetDaemon()
 
     messages = []
     while len(trigger_chan_set):
@@ -133,6 +139,8 @@ def demultiplex(trigger_chans, signal_combiner=max):
 
         trigger_chan_set.remove(trigger_chan)
 
+    dprint("tid {}".format((yield dispatch.GetTid())),
+           "fired with messages:", messages)
     return signal_combiner(messages)
 
 

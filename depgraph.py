@@ -73,6 +73,20 @@ class StaticGraph:
         # Templates.
         self.templateset = template.TemplateSet()
 
+    def write_graphviz(self, filename):
+        with open(filename, "w") as file:
+            fprint = functools.partial(print, file=file)
+            fprint("digraph depgraph {")
+            for id, vertex in self._id_vertex_map.items():
+                fprint("v{:d} [label=\"{} {}\"];".
+                       format(id,
+                              vertex.__class__.__name__,
+                              vertex.name))
+            for parent, children in self._parents.items():
+                for child in children:
+                    fprint("v{:d} -> v{:d};".format(child, parent))
+            fprint("}")
+
     def check_consistency(self):
         for vertex in self._vertex_id_map.keys():
             if isinstance(vertex, VertexPlaceholder):
@@ -329,7 +343,7 @@ class ValuesSurvey(Survey):
 class RangeSurvey(Survey):
     @runtime
     def range(self, dynamic_graph, element):
-        return range(10) # TODO
+        return range(0) # TODO
 
 class SliceSurvey(Survey):
     @runtime
