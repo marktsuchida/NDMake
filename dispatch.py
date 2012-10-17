@@ -3,6 +3,7 @@
 import collections
 import functools
 import heapq
+import inspect
 import itertools
 import queue
 import types
@@ -12,7 +13,7 @@ import weakref
 __doc__ = """Cooperative multitasking in pure Python, using coroutines."""
 
 
-DEBUG = True
+DEBUG = False
 if DEBUG:
     def dprint(*args):
         print("dispatch: {}:".format(args[0]), *args[1:])
@@ -81,12 +82,12 @@ class _EditablePriorityQueue():
 
 class _Tasklet():
 
-    def __init__(self, kernel, tid, coroutine, priority=0):
+    def __init__(self, kernel, tid, coroutine, priority=0, return_hchan=None):
         self.kernel = kernel
         self.tid = tid
         self.coroutine = coroutine
         self.priority = priority
-        self.return_chan = None
+        self.return_hchan = return_hchan
         self.is_daemon = False
         self.exited = False
         self.terminated = False
@@ -262,12 +263,13 @@ class _Kernel():
         hchan = ChannelHandle(chan)
         return hchan
 
-    def new_tasklet(self, coroutine, priority):
+    def new_tasklet(self, coroutine, priority, return_hchan=None):
         # Catch a common error (forgetting to in clude a `yield' in the func).
         assert isinstance(coroutine, types.GeneratorType), \
                 ("attempt to start tasklet with non-generator: {}".
                  format(coroutine))
-        tasklet = _Tasklet(self, next(self.tid_generator), coroutine, priority)
+        tasklet = _Tasklet(self, next(self.tid_generator), coroutine,
+                           priority, return_hchan)
         self.tasklets.add(tasklet)
         return tasklet
 
@@ -307,10 +309,16 @@ class _Kernel():
                     return_chan = tasklet.return_hchan._chan
                     ref = return_chan.enqueue(return_value, tasklet)
                     dprint(return_chan, tasklet, "returned", return_value)
+
+                    # Are tasklets waiting for the return value?
+                    keep_going = False
                     for s_tasklet in return_chan.select_recv_queue:
                         s_tasklet.clear_waits()
                         sendval = (Select.RECV, tasklet.return_hchan)
                         tasklet = s_tasklet
+                        keep_going = True
+                        break
+                    if keep_going:
                         continue
                 else:
                     dprint(tasklet, "return value discarded:", return_value)
@@ -423,8 +431,8 @@ class Spawn(_KernelCall):
         self.return_hchan = return_chan
 
     def __call__(self, kernel, tasklet):
-        new_tasklet = kernel.new_tasklet(self.coroutine, self.priority)
-        new_tasklet.return_hchan = self.return_hchan
+        new_tasklet = kernel.new_tasklet(self.coroutine, self.priority,
+                                         self.return_hchan)
         dprint(new_tasklet, "spawned by", tasklet)
         kernel.place_in_backlog(tasklet, TaskletHandle(new_tasklet))
         return new_tasklet, None
@@ -737,6 +745,8 @@ def tasklet(coroutine_func):
     Tasklets should only allow exceptions to escape if the kernel, together
     with all other tasklets, is to be terminated.
     """
+    assert inspect.isgeneratorfunction(coroutine_func), \
+            "@tasklet applied to non-generator function"
     return coroutine_func
 
 
@@ -750,5 +760,7 @@ def subtasklet(coroutine_func):
     a value (via a `return' statement), and can raise exceptions to be caught
     in the calling (sub)tasklet.
     """
+    assert inspect.isgeneratorfunction(coroutine_func), \
+            "@subtasklet applied to non-generator function"
     return coroutine_func
 

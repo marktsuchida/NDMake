@@ -1,5 +1,11 @@
 import jinja2, jinja2.meta, jinja2.sandbox
+import re
+import shlex
+import sys
 
+import debug
+
+dprint = debug.dprint_factory(__name__, False)
 
 # Notes.
 # - There was the idea of a list-template. It might be possible to list-ify
@@ -27,7 +33,8 @@ class TemplateSet:
         e.filters["basename"] = os.path.basename
         e.filters["stripext"] = lambda p: os.path.splitext(p)[0]
         e.filters["fileext"] = lambda p: os.path.splitext(p)[1]
-        # TODO e.filters["shesc"]
+        e.filters["shquote"] = shellquote
+        e.filters["shsplit"] = lambda l: shlex.split(str(l))
 
         self.environment = e
 
@@ -42,6 +49,7 @@ class Template:
 
     def __init__(self, templateset, name, source):
         templateset.sources[name] = source
+        # dprint("template registered", name)
         self.templateset = templateset
         self.name = name
         self.source = source
@@ -60,6 +68,35 @@ class Template:
         return self.params
 
     def render(self, dict_):
+        # Check that all variables are defined.
+        params = self.parameters
+        for param in params:
+            if param not in dict_ and param != "g":
+                dprint("rendering " + self.name,
+                       "source: \"\"\"{}\"\"\",".format(self.source),
+                       "dict:", str(dict_))
+                raise KeyError("undefined template variable: {}".format(param))
+
         tmpl = self.environment.get_template(self.name)
-        return tmpl.render(dict_)
+        try:
+            rendition = tmpl.render(dict_)
+        except Exception as e:
+            raise ValueError("template {t} (source: \"\"\"{s}\"\"\", "
+                             "dict: {d}) could not be rendered: {e}".
+                             format(t=self.name, s=self.source,
+                                    d=dict_, e=e))
+
+        dprint("rendered " + self.name,
+               "source: \"\"\"{}\"\"\",".format(self.source),
+               "dict:", str(dict_) + ",",
+               "result: \"\"\"{}\"\"\"".format(rendition))
+        return rendition
+
+
+_before_unsafe_char = re.compile("(?=[^-_./A-Za-z0-9])")
+def shellquote(name):
+    if name:
+        return (_before_unsafe_char.sub(r"\\", name). # Prefix unsafe with '\'.
+                replace("\\\n", "'\n'")) # Handle newline specially.
+    return "''"
 

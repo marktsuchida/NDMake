@@ -10,6 +10,7 @@ import debug
 
 
 dprint = debug.dprint_factory(__name__, True)
+dprint_iter = debug.dprint_factory(__name__, False)
 def abstract_method_call(object_, method_name):
     class_name = type(object_).__name__
     return "abstract method {} called on {} instance".format(method_name,
@@ -298,58 +299,56 @@ class VertexPlaceholder(Vertex):
 
 
 #
+# Concrete Vertices
+#
+
+class Dataset(Vertex):
+    def __init__(self, name, scope, filename_template):
+        super().__init__(name, scope)
+        self.filename_template = filename_template
+
+
+class Computation(Vertex):
+    def __init__(self, name, scope, command_template, parallel=False):
+        super().__init__(name, scope)
+        self.command_template = command_template
+        self.parallel = parallel
+
+
+class Survey(Vertex):
+    def __init__(self, name, scope, surveyer):
+        super().__init__(name, scope)
+        self.surveyer = surveyer
+
+
+#
 # Surveyer
 #
 
-# Surveyers dynamically determine a extent at runtime. They supply the extent
-# sequence with either a range or a value list (converting a value list into a
-# range, if necessary, is the responsibility of the sequence).
-
 class Surveyer:
+    def __init__(self, name, scope):
+        self.name = name
+        self.scope = scope
+
     @runtime
     def survey(self, dynamic_graph, element):
         assert False, abstract_method_call(self, "survey")
 
 class CommandSurveyer(Surveyer):
-    def __init__(self, scope, command_template):
-        pass
+    def __init__(self, name, scope, command_template):
+        super().__init__(name, scope)
+        self.command_template = command_template
 
 class IntegerTripletCommandSurveyer(CommandSurveyer):
     pass
 
 class ValuesCommandSurveyer(CommandSurveyer):
-    def __init__(self, scope, command_template, transform_template=None):
-        pass
+    def __init__(self, name, scope, command_template, transform_template=None):
+        super().__init__(name, scope)
 
 class FilenameSurveyer(Surveyer):
-    def __init__(self, scope, pattern_template, transform_template=None):
-        pass
-
-#
-# Surveys
-#
-
-# These are part of the dependency graph and cache their result.
-
-class Survey(Vertex):
-    def __init__(self, name, scope, surveyer):
-        self.name = name
-
-class ValuesSurvey(Survey):
-    @runtime
-    def values(self, dynamic_graph, element):
-        return [] # TODO
-
-class RangeSurvey(Survey):
-    @runtime
-    def range(self, dynamic_graph, element):
-        return range(0) # TODO
-
-class SliceSurvey(Survey):
-    @runtime
-    def slice(self, dynamic_graph, element):
-        return slice(0) # TODO
-
+    def __init__(self, name, scope, pattern_template, transform_template=None):
+        super().__init__(name, scope)
 
 #
 # Dimension
@@ -402,6 +401,17 @@ class Extent:
     def full_name(self):
         assert False, abstract_method_call(self, "full_name")
 
+    @property
+    def is_surveyed(self):
+        return isinstance(self.source, Survey)
+
+    @runtime
+    def is_demarcated(self, dynamic_graph, element):
+        if not self.is_surveyed:
+            return True
+        survey = dynamic_graph.runtime(self.source)
+        return not not survey.is_result_available(element)
+
     @runtime
     def sequence(self, dynamic_graph, element):
         assert False, abstract_method_call(self, "sequence")
@@ -431,11 +441,10 @@ class EnumeratedExtentMixin(SequenceExtentMixin):
     @runtime
     def raw_sequence(self, dynamic_graph, element):
         if isinstance(self.source, Survey):
-            assert isinstance(self.source, ValuesSurvey)
             survey = dynamic_graph.runtime(self.source)
-            return survey.values(element)
+            return survey.result(element)
 
-        values_str = element.render_template(dynamic_graph, self.source)
+        values_str = element.render_template(self.source)
         return shlex.split(values_str)
 
 
@@ -443,19 +452,20 @@ class ArithmeticExtentMixin(SequenceExtentMixin):
     @runtime
     def raw_sequence(self, dynamic_graph, element):
         if isinstance(self.source, Survey):
-            assert isinstance(self.source, RangeSurvey)
             survey = dynamic_graph.runtime(self.source)
-            return survey.range(element) # TODO Add error info.
+            rangeargs = survey.result(element)
 
-        rangeargs_str = element.render_template(dynamic_graph, self.source)
-        try:
-            rangeargs = tuple(int(a) for a in rangeargs_str.split())
-            assert len(rangeargs) in range(1, 4)
-        except:
-            raise ValueError("{}: range template must expand to 1-3 "
-                             "integers (got `{}')".
-                             format(self.full_name, rangeargs_str))
-        return range(*rangeargs)
+        else:
+            rangeargs_str = element.render_template(self.source)
+            try:
+                rangeargs = tuple(int(a) for a in rangeargs_str.split())
+                assert len(rangeargs) in range(1, 4)
+            except:
+                raise ValueError("{}: range template must expand to 1-3 "
+                                 "integers (got `{}')".
+                                 format(self.full_name, rangeargs_str))
+
+        return list(str(i) for i in range(*rangeargs))
 
 
 class FullExtent(Extent, SequenceExtentMixin):
@@ -530,12 +540,17 @@ class SequenceSubextent(Subextent, SequenceExtentMixin):
         super_values = frozenset(super_runtime.sequence(element))
         for value in self_runtime.raw_sequence(element):
             if value not in super_values:
+                super_values = " ".join(super_runtime.sequence(element))
+                if not super_values:
+                    super_values = "(none)"
                 raise ValueError("value `{value}' generated by {sub} "
-                                 "not a member of {super}".
+                                 "not a member of {super} "
+                                 "(allowed values are: {supervalues})".
                                  format(sub=self.full_name,
                                         super=self.superextent.full_name,
-                                        value=value))
-                yield value
+                                        value=value,
+                                        supervalues=super_values))
+            yield value
 
 
 class EnumeratedSubextent(SequenceSubextent, EnumeratedExtentMixin):
@@ -550,18 +565,19 @@ class IndexedSubextent(Subextent):
     @runtime
     def slice(self, dynamic_graph, element):
         if isinstance(self.source, Survey):
-            assert isinstance(self.source, SliceSurvey)
             survey = dynamic_graph.runtime(self.source)
-            return survey.slice(element) # TODO Add error info.
+            sliceargs = survey.result(element)
 
-        sliceargs_str = element.render_template(dynamic_graph, self.source)
-        try:
-            sliceargs = tuple(int(a) for a in sliceargs_str.split())
-            assert len(sliceargs) in range(1, 4)
-        except:
-            raise ValueError("{}: slice template must expand to 1-3 "
-                             "integers (got `{}')".
-                             format(self.full_name, sliceargs_str))
+        else:
+            sliceargs_str = element.render_template(self.source)
+            try:
+                sliceargs = tuple(int(a) for a in sliceargs_str.split())
+                assert len(sliceargs) in range(1, 4)
+            except:
+                raise ValueError("{}: slice template must expand to 1-3 "
+                                 "integers (got `{}')".
+                                 format(self.full_name, sliceargs_str))
+
         return slice(*sliceargs)
 
     @runtime
@@ -574,7 +590,7 @@ class IndexedSubextent(Subextent):
     def iterate(self, dynamic_graph, element):
         self_runtime = dynamic_graph.runtime(self)
         super_runtime = dynamic_graph.runtime(self.superextent)
-        slice_ = self_runtime.slice
+        slice_ = self_runtime.slice(element)
         sliceargs = (slice_.start, slice_.stop, slice_.step)
         return itertools.islice(super_runtime.iterate(element), *sliceargs)
 
@@ -588,7 +604,10 @@ class Space:
         manifest_dims = frozenset(extent.dimension
                                   for extent in manifest_extents)
         if len(manifest_extents) > len(manifest_dims):
-            raise ValueError("cannot create space with nonorthogonal extents")
+            raise ValueError("cannot create space with nonorthogonal "
+                             "extents: {}".
+                             format(", ".join(str(e)
+                                              for e in manifest_extents)))
         self.manifest_extents = manifest_extents
 
         # Collect all the extents on which the manifest ones depend on.
@@ -660,7 +679,13 @@ class Space:
                 return extent
         raise KeyError("{} not in {}".format(dimension, self))
 
-    def canonical_element(self, element, require_full=False):
+    def is_full_element(self, element):
+        for extent in self.extents:
+            if extent.dimension not in element.space.dimensions:
+                return False
+        return True
+
+    def canonicalized_element(self, element, require_full=False):
         if element.space is self:
             return element
 
@@ -702,9 +727,10 @@ class Space:
 
         if len(assigned_extents) == self.ndims:
             # Element assigned coordinates to all of our dimensions.
-            element = self.canonical_element(element)
-            dprint(self, "iterate() yielding", element)
-            yield element
+            element = self.canonicalized_element(element)
+            dprint_iter(self, "iterate({}): yielding full element".
+                        format(element))
+            yield (element, True) # Flag indicating full element.
             return
 
         # We will iterate over the first unassigned extent.
@@ -721,10 +747,24 @@ class Space:
                 assigned_extents.append(extent)
                 base_coords[extent.dimension] = element[extent.dimension]
 
-        for value in dynamic_graph.runtime(extent_to_iterate).iterate(element):
-            base_coords[extent_to_iterate.dimension] = value
+        extent_runtime = dynamic_graph.runtime(extent_to_iterate)
+        if extent_runtime.is_demarcated(element):
+            dprint_iter(self, "iterate({}): iterating extent:".format(element),
+                        extent_to_iterate)
+            for value in (extent_runtime.iterate(element)):
+                base_coords[extent_to_iterate.dimension] = value
+                new_element = Element(Space(assigned_extents), base_coords)
+                dprint_iter(self, "iterate({}): descending into:".
+                            format(element), new_element)
+                yield from dynamic_graph.runtime(self).iterate(new_element)
+            dprint_iter(self, "iterate({}): finished".format(element))
+        else: # Undemarcated: yield a partial element.
+            assigned_extents.remove(extent_to_iterate)
             new_element = Element(Space(assigned_extents), base_coords)
-            yield from dynamic_graph.runtime(self).iterate(new_element)
+            dprint_iter(self, "iterate({}) yielding partial element:".
+                        format(element), new_element)
+            yield (new_element, False) # Flag indicating partial element.
+
 
 
 class Element:
@@ -761,27 +801,9 @@ class Element:
     def as_dict(self):
         return dict((dim.name, self[dim]) for dim in self.space.dimensions)
 
-    @runtime
-    def render_template(self, dynamic_graph, template, extra_names={}):
+    def render_template(self, template, *, extra_names={}):
         dict_ = self.as_dict().copy()
         dict_.update(extra_names)
         rendition = template.render(dict_)
         return rendition
-
-
-#
-# Dataset and computation
-#
-
-class Dataset(Vertex):
-    def __init__(self, name, scope, filename_template):
-        super().__init__(name, scope)
-        self.filename_template = filename_template
-
-class Computation(Vertex):
-    def __init__(self, name, scope, command_template, parallel=False):
-        super().__init__(name, scope)
-        self.command_template = command_template
-        self.parallel = parallel
-
 

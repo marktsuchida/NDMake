@@ -19,7 +19,7 @@
 # defs itself).
 
 # Special filters: dirname(filename), basename(filename), stripext(filename),
-# fileext(filename), shesc() # add to environment's filters
+# fileext(filename), shquote() # add to environment's filters
 
 
 # The name ("data_params" here) is optional and not used but allows multiple
@@ -27,27 +27,33 @@
 [global data_params]
 defs:
     {% set iterations = [50, 50, 200, 20] %}
-    {% set moving_frames = {"S1378_1": (22, 251)} %}
+    {% set moving_range = {"S1378_1": (22, 251)} %}
 
     {% set bounds = {"S1378_1": (807, 807 + 216, 239, 239 + 512)} %}
     {% set velocity = {"S1378_1": -1.0} %}
     {% set seconds_per_frame = {"S1378_1": 0.23985} %}
     {% set microns_per_pixel = 0.0868 %}
 
+    {% set demons_interval = 4 %}
+
     {% macro px_per_frame(experiment) -%}
     {{velocity[experiment] / microns_per_pixel * seconds_per_frame[experiment]}}
     {%- endmacro %}
+
+[global logistics]
+defs:
+    {% set python = ". env/bin/activate; python" %}
 
 [dimension EXPERIMENT]
 # Parsed with shlex.split.
 values: S1378_1
 
 [dimension RESOLUTION]
-range: {{len(g.iterations)}}
+range: {{g.iterations|length}}
 
 [dimension ITERATION]
 given: RESOLUTION
-range: {{g.iterations[RESOLUTION]}}
+range: 1 {{g.iterations[RESOLUTION|int] + 1}}
 
 [dataset input_metadata]
 scope: EXPERIMENT
@@ -56,7 +62,7 @@ filename: input/symlinks/{{EXPERIMENT}}/metadata.txt
 [dimension FRAME]
 given: EXPERIMENT
 input: input_metadata
-range_command: echo 100 # XXX Temporary, of course.
+range_command: {{g.python}} json_get.py {{input_metadata}} Summary.Frames
 # Instead of range_command, command or match + transform can be used.
 # Output of range_command or command is shlex'ed.
 #
@@ -69,83 +75,81 @@ range_command: echo 100 # XXX Temporary, of course.
 
 [dataset input_tifs]
 scope: FRAME
-filename: input/symlinks/{{EXPERIMENT}}/img_{{"%04d"|format(FRAME)}}_Sequence_000.tif
+filename: input/symlinks/{{EXPERIMENT}}/img_{{"%09d"|format(FRAME|int)}}_Sequence_000.tif
 
 [subdomain FRAME.moving]
-range: {{g.moving_range[EXPERIMENT]}}
+range: {{g.moving_range[EXPERIMENT]|join(" ")}}
 
 [compute transform_refframe]
 scope: FRAME.moving
 parallel: yes
 input: input_tifs
 command: {% set bounds = g.bounds[EXPERIMENT] -%}
- {% set rel_frame = FRAME - g.moving_range[EXPERIMENT][0] -%}
- python linear_translation.py --type=uint16 \
+ {% set rel_frame = FRAME|int - g.moving_range[EXPERIMENT][0] -%}
+ {{g.python}} linear_translation.py --type=uint16 \
      --output={{glass_refframe}} \
      --v-start={{bounds[0]}} --v-stop={{bounds[1]}} \
      --h-start={{bounds[2]}} --h-stop={{bounds[3]}} \
-     --v-speed={{"%e"|format(g.px_per_frame(EXPERIMENT))}} \
+     --v-speed={{"%e"|format(g.px_per_frame(EXPERIMENT)|float)}} \
      --time={{"%d"|format(rel_frame)}} \
      {{input_tifs}}
 
 [dataset glass_refframe]
 scope: FRAME.moving
 producer: transform_refframe
-filename: compute/glass-refframe/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.tif
+filename: compute/glass-refframe/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.tif
 
-[subdomain FRAME.selection]
-range:
- {% set moving_range g.moving_range[EXPERIMENT] -%}
- {{moving_range[0]}} {{moving_range[1] - g.demons_interval}}
+[subdomain FRAME.moving.selection]
+slice: 0 {{-g.demons_interval}}
 
 [compute perframe_deform]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 parallel: 4
 input: glass_refframe
-command: demons \
+command: DYLD_LIBRARY_PATH=/usr/local/lib ./demons \
      -histogram_match \
-     -displacement_field_prefix={{iter_defo_field[0]|dirname}}/ \
+     -displacement_field_prefix={{(iter_defo_field|shsplit)[0]|dirname}}/ \
      -displacement_field_suffix=.mha \
-     -iterations={{g.iterations.join(",")}} \
+     -iterations={{g.iterations|join(",")}} \
      -maximum_step_length=0.6 \
      -displacement_field_sigma=1.8 \
      -update_field_sigma=0.0 \
      {{glass_refframe}} \
-     {{glass_refframe(FRAME=int(FRAME) + g.demons_interval)}}
+     {{glass_refframe(FRAME=FRAME|int + g.demons_interval)}}
 # Each dataset name is an object with __str__() and __call__(*, **kwargs).
 # This can be used in various ways (e.g. glass_refframe(FRAME=0)).
 # kwargs defaults to the current iteration element, and the value of
 # __call__() is a list if the element ends up being partially specified.
 
 [dataset iter_defo_field]
-scope: FRAME.selection ITERATION
+scope: FRAME.moving.selection ITERATION
 producer: perframe_deform
-filename: compute/iter_field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}/field{{"%02d"|format(RESOLUTION)}}_{{"%04d"|format(ITERATION)}}.mha
+filename: compute/iter_field/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}/{{"%02d"|format(RESOLUTION|int)}}_{{"%04d"|format(ITERATION|int)}}.mha
 
 [compute get_final_field]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 parallel: yes
 input: iter_defo_field
-command: cp {{iter_defo_field[-1]}} {{unmasked_field}}
+command: cp {{(iter_defo_field|shsplit)[-1]}} {{unmasked_field}}
 
 [dataset unmasked_field]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 producer: get_final_field
-filename: compute/field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
+filename: compute/field/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.mha
 
 [compute deform_moving_image]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 input: unmasked_field glass_refframe
 parallel: yes
-command: python apply_field.py \
+command: {{g.python}} apply_field.py \
     {{unmasked_field}} \
-    {{glass_refframe(FRAME=int(FRAME) + g.demons_interval)}} \
+    {{glass_refframe(FRAME=FRAME|int + g.demons_interval)}} \
     {{registered_image}}
 
 [dataset registered_image]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 producer: deform_moving_image
-filename: compute/registered/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
+filename: compute/registered/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.tif
 
 [compute mask_images]
 scope: FRAME.moving
@@ -155,52 +159,41 @@ command: echo mask needs update: {{glass_frame_masks}}; exit 1
 [dataset glass_frame_masks]
 scope: FRAME.moving
 producer: mask_images
-filename: manual/masks/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.tif
+filename: manual/masks/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.tif
 
 [compute mask_fields]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 input: glass_frame_masks unmasked_field
 command: cp {{unmasked_field}} {{deformation_field}}
 
 [dataset deformation_field]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 producer: mask_fields
-filename: compute/field_masked/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
-
-[compute convert_registered]
-scope: FRAME.selection
-input: registered_image
-parallel: yes
-command: python meta2tif.py {{registered_image}} {{registered_tif}}
-
-[dataset registered_tif]
-scope: FRAME.selection
-producer: convert_registered
-filename: compute/registered/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.tif
+filename: compute/field_masked/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.mha
 
 [compute plot_displacement]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 input: glass_refframe deformation_field
 parallel: yes
-command: python plot_field.py --image={{glass_refframe}} \
-     --title='Per-frame, {{EXPERIMENT}}: {{"% 4d"|format(FRAME)}}' \
+command: {{g.python}} plot_field.py --image={{glass_refframe}} \
+     --title='Per-frame, {{EXPERIMENT}}: {{"% 4d"|format(FRAME|int)}}' \
      --vectors \
      {{deformation_field}} {{displacement_plot}}
 
 [dataset displacement_plot]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 producer: plot_displacement
-filename: plot/field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.eps
+filename: plot/field/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.eps
 
 [compute accumulate_disp]
 scope: EXPERIMENT
 input: deformation_field
-command: python accumulate_field.py \
-     {% for f in deformation_field %}"{{deformation_field|shesc}}"{% endfor %} \
-     {{cumul_disp[0]|dirname}}
+command: {{g.python}} accumulate_field.py \
+     {{deformation_field}} \
+     {{(cumul_disp|shsplit)[0]|dirname}}
 
 [dataset cumul_disp]
-scope: FRAME.selection
+scope: FRAME.moving.selection
 producer: accumulate_disp
-filename: compute/cumul_field/{{EXPERIMENT}}/{{"%04d"|format(FRAME)}}.mha
+filename: compute/cumul_field/{{EXPERIMENT}}/{{"%04d"|format(FRAME|int)}}.mha
 

@@ -7,7 +7,7 @@ import depgraph
 import template
 import debug
 
-dprint = debug.dprint_factory(__name__, True)
+dprint = debug.dprint_factory(__name__, False)
 
 # Parse an ndmake input file (an ndmakefile).
 #
@@ -372,6 +372,14 @@ class NDMakefile:
             extents.append(extent)
         return extents
 
+    def add_vertex(self, vertex):
+        self.graph.add_vertex(vertex)
+        ancestoral_surveys = (extent.source
+                              for extent in vertex.scope.extents
+                              if extent.is_surveyed)
+        for survey in ancestoral_surveys:
+            self.graph.add_edge(survey, vertex)
+
     def parse_global_section(self, section):
         if "defs" in section.entries:
             self.graph.templateset.append_global_defs(section.entries["defs"])
@@ -428,9 +436,10 @@ class NDMakefile:
                                         section.entries["transform"])
             else:
                 tfm_tmpl = None
-            surveyer = depgraph.ValuesCommandSurveyer(scope, tmpl, tfm_tmpl)
-            survey = depgraph.ValuesSurvey(name, scope, surveyer)
-            self.graph.add_vertex(survey)
+            surveyer = depgraph.ValuesCommandSurveyer(name, scope,
+                                                      tmpl, tfm_tmpl)
+            survey = depgraph.Survey(name, scope, surveyer)
+            self.add_vertex(survey)
             source = survey
 
         elif "range_command" in section.entries:
@@ -438,9 +447,10 @@ class NDMakefile:
                        depgraph.ArithmeticSubextent)
             tmpl = new_template("__rcmd_{}".format(name),
                                 section.entries["range_command"])
-            surveyer = depgraph.IntegerTripletCommandSurveyer(scope, tmpl)
-            survey = depgraph.RangeSurvey(name, scope, surveyer)
-            self.graph.add_vertex(survey)
+            surveyer = depgraph.IntegerTripletCommandSurveyer(name, scope,
+                                                              tmpl)
+            survey = depgraph.Survey(name, scope, surveyer)
+            self.add_vertex(survey)
             source = survey
 
         elif "slice_command" in section.entries:
@@ -448,9 +458,10 @@ class NDMakefile:
             classes = (None, depgraph.IndexedSubextent)
             tmpl = new_template("__scmd_{}".format(name),
                                 section.entries["slice_command"])
-            surveyer = depgraph.IntegerTripletCommandSurveyer(scope, tmpl)
-            survey = depgraph.SliceSurvey(name, scope, surveyer)
-            self.graph.add_vertex(survey)
+            surveyer = depgraph.IntegerTripletCommandSurveyer(name, scope,
+                                                              tmpl)
+            survey = depgraph.Survey(name, scope, surveyer)
+            self.add_vertex(survey)
             source = survey
 
         else:
@@ -464,9 +475,10 @@ class NDMakefile:
                                         section.entries["transform"])
             else:
                 tfm_tmpl = None
-            surveyer = depgraph.FilenameSurveyer(scope, match_tmpl, tfm_tmpl)
-            survey = depgraph.ValuesSurvey(name, scope, surveyer)
-            self.graph.add_vertex(survey)
+            surveyer = depgraph.FilenameSurveyer(name, scope,
+                                                 match_tmpl, tfm_tmpl)
+            survey = depgraph.Survey(name, scope, surveyer)
+            self.add_vertex(survey)
             source = survey
             
         if "input" in section.entries:
@@ -507,7 +519,7 @@ class NDMakefile:
                              section.entries["filename"])
 
         dataset = depgraph.Dataset(section.name, scope, tmpl)
-        self.graph.add_vertex(dataset)
+        self.add_vertex(dataset)
 
         if "producer" in section.entries:
             compute = self.graph.vertex_by_name(section.entries["producer"],
@@ -543,7 +555,7 @@ class NDMakefile:
                               "compute", section.name)
 
         compute = depgraph.Computation(section.name, scope, tmpl, parallel)
-        self.graph.add_vertex(compute)
+        self.add_vertex(compute)
 
         for input in section.entries.get("input", "").split():
             dataset = self.graph.vertex_by_name(input, depgraph.Dataset)
