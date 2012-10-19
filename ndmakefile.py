@@ -60,8 +60,6 @@ class NDMakefile:
         parser.read_file(file)
         self.add_sections(parser)
         self.check_for_missing_sections()
-        if debug.DEBUG:
-            self.write_sections_graphviz("sections.dot")
         self.topologically_sort_sections()
         self.parse_sorted_sections()
 
