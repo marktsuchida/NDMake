@@ -5,10 +5,17 @@ import multiprocessing
 import queue
 import sys
 import threading
-import warnings
 
 
 __doc__ = """Thread pool for use from tasklets."""
+
+
+DEBUG = False
+if DEBUG:
+    def dprint(*args):
+        print("threadpool:", *args)
+else:
+    def dprint(*args): pass
 
 
 class _PoolThread(threading.Thread):
@@ -21,27 +28,29 @@ class _PoolThread(threading.Thread):
 
         self.start()
 
-    def enqueue_task(self, func, context, reply_method):
+    def enqueue_task(self, func, context, reply_method, sequestered_threads):
         # To be called from the main thread.
-        self.task_queue.put((func, context, reply_method))
+        self.task_queue.put((func, context, reply_method, sequestered_threads))
 
     def finish(self):
         # To be called from the main thread.
-        self.task_queue.put(Ellipsis)
+        self.task_queue.put(...)
 
     def run(self):
         while True:
             try:
                 task = self.task_queue.get_nowait()
             except queue.Empty:
+                dprint(self.name + ":", "idle")
                 self.idle_notify_method(self)
                 task = self.task_queue.get() # Block.
 
-            if task is Ellipsis: # Sentinel.
+            if task is ...: # Sentinel.
+                dprint(self.name + ":", "idle")
                 self.idle_notify_method(self)
                 break
 
-            func, context, reply_method = task
+            func, context, reply_method, sequestered_threads = task
             try:
                 retval = func()
                 exc_info = None
@@ -49,22 +58,47 @@ class _PoolThread(threading.Thread):
                 retval = None
                 exc_info = sys.exc_info()
             result = context, retval, exc_info
+
+            for sequestered_thread in sequestered_threads:
+                dprint(sequestered_thread.name + ":", "idle (unsequestered)")
+                self.idle_notify_method(sequestered_thread)
+
             reply_method(result)
 
 
+@dispatch.subtasklet
+def _wait_for_thread(all_threads, max_threads, idle_thread_chan):
+    # Subroutine for threadpool().
+
+    if len(all_threads) < max_threads:
+        # Create a new thread.
+        idle_notify_method = yield dispatch.AsyncSender(idle_thread_chan)
+        thread = _PoolThread(idle_notify_method)
+        all_threads.append(thread)
+        dprint("started thread:", thread.name)
+
+    # Wait for an idle thread.
+    dprint("waiting for idle thread")
+    thread = yield dispatch.Recv(idle_thread_chan)
+    dprint("idle:", thread.name)
+
+    return thread
+
+
 @dispatch.tasklet
-def thread_pool(task_chan, max_threads=None):
+def threadpool(task_chan, max_threads=None):
     """Thread pool tasklet.
 
     Usage example (in a tasklet):
 
     # Create the thread pool:
     task_send_channel = yield dispatch.MakeChannel()
-    yield dispatch.Spawn(thread_pool(task_send_channel))
+    yield dispatch.Spawn(threadpool(task_send_channel))
 
     # Enqueue a task:
     result_channel = yield dispatch.MakeChannel()
-    yield dispatch.Send(task_send_channel, (func, context, result_channel))
+    yield dispatch.Send(task_send_channel, (func, context, result_channel,
+                                            occupancy))
     # The Send will block until a thread is available (unless block=False is
     # given).
 
@@ -77,42 +111,53 @@ def thread_pool(task_chan, max_threads=None):
 
     # Shut down the thread pool:
     finish_channel = yield dispatch.MakeChannel()
-    yield dispatch.Send(task_send_channel, (Ellipsis, "exit", finish_channel),
+    yield dispatch.Send(task_send_channel, (..., None, finish_channel, None),
                         block=False)
 
     # Wait until thread pool has finished:
     context, retval, exc_info = yield dispatch.Recv(finish_channel)
-    # In this example, context == "exit", retval is Ellipsis, exc_info is None.
-
+    # In this example, context is None, retval is Ellipsis, exc_info is None.
     """
 
-    # Shuts down if func is Ellipsis, sending Ellipsis on reply_chan when all
-    # threads have finished.
     if not max_threads:
         max_threads = multiprocessing.cpu_count()
     all_threads = []
     finished_threads = set() # Threads that have finished their last task.
     idle_thread_chan = yield dispatch.MakeChannel()
-    idle_notify_method = yield dispatch.AsyncSender(idle_thread_chan)
-    try:
-        while True:
-            if len(all_threads) >= max_threads:
-                # Wait for an idle thread.
-                thread = yield dispatch.Recv(idle_thread_chan)
-            else:
-                thread = None # "Create as necessary".
 
-            func, context, reply_chan = yield dispatch.Recv(task_chan)
-            if func is Ellipsis: # Sentinel.
-                if thread is not None:
-                    finished_threads.add(thread)
+    dprint("starting")
+
+    try: # On exception, we need to join all threads.
+
+        while True:
+            thread = yield from _wait_for_thread(all_threads, max_threads,
+                                                 idle_thread_chan)
+
+            func, context, reply_chan, occupancy = \
+                    yield dispatch.Recv(task_chan)
+
+            if func is ...: # Sentinel.
+                finish_notify_chan = reply_chan
+                finished_threads.add(thread)
+                dprint("added to finished_threads:", thread.name)
                 break
-            else:
-                if thread is None:
-                    thread = _PoolThread(idle_notify_method)
-                    all_threads.append(thread)
-                reply_method = yield dispatch.AsyncSender(reply_chan)
-                thread.enqueue_task(func, context, reply_method)
+
+            # Start the task.
+            # Ensure that we don't wait for more threads than will be
+            # available.
+            occupancy = max(1, min(max_threads, occupancy))
+            extra_threads = []
+            for i in range(occupancy - 1):
+                extra_thread = yield from _wait_for_thread(all_threads,
+                                                           max_threads,
+                                                           idle_thread_chan)
+                extra_threads.append(extra_thread)
+            reply_method = yield dispatch.AsyncSender(reply_chan)
+            dprint("enqueuing task on {} with {:d} extra threads:".
+                   format(thread.name, len(extra_threads)),
+                   ", ".join(sorted(t.name for t in extra_threads)))
+            assert len(set(extra_threads)) == len(extra_threads)
+            thread.enqueue_task(func, context, reply_method, extra_threads)
 
         # Shut down working threads.
         for thread in all_threads:
@@ -124,23 +169,30 @@ def thread_pool(task_chan, max_threads=None):
         # We place threads that have finished their final task in
         # finished_threads; threads that are already in finished_threads may
         # be joined as soon as they show up in idle_thread_chan again.
+        if len(all_threads):
+            dprint("waiting for threads to finish")
         while len(all_threads):
             thread = yield dispatch.Recv(idle_thread_chan)
             if thread in finished_threads: # Thread terminated.
                 thread.join()
+                dprint("joined", thread.name)
                 all_threads.remove(thread)
             else: # Thread finished last task.
                 finished_threads.add(thread)
+                dprint("finished last task:", thread.name)
 
         # Signal that the thread pool has finished all tasks.
-        yield Send(reply_chan, (context, Ellipsis, None))
+        dprint("exiting")
+        yield dispatch.Send(finish_notify_chan, (context, ..., None))
 
     finally:
         # If an uncaught exception occurs, we make sure that the pool threads
         # are not leaked.
-        warnings.warn("waiting for threadpool threads to finish")
+        if len(all_threads):
+            dprint("terminating; waiting for threads to finish")
         for thread in all_threads:
             thread.finish()
         for thread in all_threads:
             thread.join()
+            dprint("joined", thread.name)
 

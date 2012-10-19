@@ -13,7 +13,8 @@ graph.write_graphviz("deps.dot")
 
 updater = update.Update(graph)
 try:
-    dispatch.start_with_tasklet(updater.update_vertices(graph.sinks()))
+    dispatch.start_with_tasklet(updater.update_vertices(graph.sinks(),
+                                                        parallel=True))
 except update.NotUpToDateException as e:
     vertex = e.args[0]
     if isinstance(vertex, depgraph.RuntimeDecorator):

@@ -11,6 +11,7 @@ import debug
 
 dprint = debug.dprint_factory(__name__, True)
 dprint_iter = debug.dprint_factory(__name__, False)
+dprint_extent = debug.dprint_factory(__name__, False)
 def abstract_method_call(object_, method_name):
     class_name = type(object_).__name__
     return "abstract method {} called on {} instance".format(method_name,
@@ -309,10 +310,10 @@ class Dataset(Vertex):
 
 
 class Computation(Vertex):
-    def __init__(self, name, scope, command_template, parallel=False):
+    def __init__(self, name, scope, command_template, occupancy=1):
         super().__init__(name, scope)
         self.command_template = command_template
-        self.parallel = parallel
+        self.occupancy = occupancy
 
 
 class Survey(Vertex):
@@ -445,7 +446,10 @@ class EnumeratedExtentMixin(SequenceExtentMixin):
             return survey.result(element)
 
         values_str = element.render_template(self.source)
-        return shlex.split(values_str)
+        dprint_extent(self, "values string:", values_str)
+        values = shlex.split(values_str)
+        dprint_extent(self, "values:", ", ".join(values))
+        return values
 
 
 class ArithmeticExtentMixin(SequenceExtentMixin):
@@ -457,6 +461,7 @@ class ArithmeticExtentMixin(SequenceExtentMixin):
 
         else:
             rangeargs_str = element.render_template(self.source)
+            dprint_extent(self, "rangeargs string:", rangeargs_str)
             try:
                 rangeargs = tuple(int(a) for a in rangeargs_str.split())
                 assert len(rangeargs) in range(1, 4)
@@ -465,7 +470,9 @@ class ArithmeticExtentMixin(SequenceExtentMixin):
                                  "integers (got `{}')".
                                  format(self.full_name, rangeargs_str))
 
-        return list(str(i) for i in range(*rangeargs))
+        dprint_extent(self, "rangeargs:", ", ".join(str(a) for a in rangeargs))
+        values = list(str(i) for i in range(*rangeargs))
+        return values
 
 
 class FullExtent(Extent, SequenceExtentMixin):
@@ -570,6 +577,7 @@ class IndexedSubextent(Subextent):
 
         else:
             sliceargs_str = element.render_template(self.source)
+            dprint_extent(self, "sliceargs string:", sliceargs_str)
             try:
                 sliceargs = tuple(int(a) for a in sliceargs_str.split())
                 assert len(sliceargs) in range(1, 4)
@@ -578,6 +586,7 @@ class IndexedSubextent(Subextent):
                                  "integers (got `{}')".
                                  format(self.full_name, sliceargs_str))
 
+        dprint_extent(self, "sliceargs:", ", ".join(str(a) for a in sliceargs))
         return slice(*sliceargs)
 
     @runtime
@@ -592,7 +601,7 @@ class IndexedSubextent(Subextent):
         super_runtime = dynamic_graph.runtime(self.superextent)
         slice_ = self_runtime.slice(element)
         sliceargs = (slice_.start, slice_.stop, slice_.step)
-        return itertools.islice(super_runtime.iterate(element), *sliceargs)
+        return iter(list(super_runtime.iterate(element))[slice(*sliceargs)])
 
 
 #

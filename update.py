@@ -10,11 +10,12 @@ import depgraph
 import dispatch
 import files
 import template
+import threadpool
 
 dprint_mux = debug.dprint_factory(__name__, False)
 dprint_traverse = debug.dprint_factory(__name__, False)
 dprint_mtime = debug.dprint_factory(__name__, False)
-dprint = debug.dprint_factory(__name__, True)
+dprint = debug.dprint_factory(__name__, False)
 def strfmtime(mtime):
     return (time.strftime("%Y%m%dT%H%M%S", time.localtime(mtime)) +
             ".{:04d}".format(round(mtime % 1 * 10000)))
@@ -219,7 +220,7 @@ class Update:
         return notification_chan
 
     @dispatch.tasklet
-    def update_vertex(self, vertex):
+    def update_vertex(self, vertex, **options):
         vertex = self.graph.runtime(vertex)
 
         # Prevent duplicate execution.
@@ -235,32 +236,32 @@ class Update:
         # Set up notification for our completion.
         completion_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(multiplex(completion_chan, request_chan))
-        yield dispatch.Spawn(self._update_vertex(vertex),
+        yield dispatch.Spawn(self._update_vertex(vertex, **options),
                              return_chan=completion_chan)
 
     @dispatch.tasklet
-    def _update_vertex(self, vertex):
+    def _update_vertex(self, vertex, **options):
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing upward:", vertex)
 
         # Update prerequisites.
         parents = self.graph.parents_of(vertex)
-        yield from self.update_vertices(parents)
+        yield from self._update_vertices(parents, **options)
 
         # Perform the update action.
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing downward:", vertex)
         completion_chan = yield dispatch.MakeChannel()
-        yield dispatch.Spawn(do_update(vertex),
+        yield dispatch.Spawn(vertex.update_all_elements(**options),
                              return_chan=completion_chan)
         yield dispatch.Recv(completion_chan)
 
     @dispatch.tasklet
-    def update_vertices(self, vertices):
+    def _update_vertices(self, vertices, **options):
         vertices = list(self.graph.runtime(v) for v in vertices)
 
         for vertex in vertices:
-            yield dispatch.Spawn(self.update_vertex(vertex))
+            yield dispatch.Spawn(self.update_vertex(vertex, **options))
 
         # Set up to receive notification as vertices are completed.
         # And implicitly trigger recursive update of prerequisites.
@@ -275,15 +276,26 @@ class Update:
                                  return_chan=completion_chan)
             yield dispatch.Recv(completion_chan)
 
+    @dispatch.tasklet
+    def update_vertices(self, vertices, **options):
+        new_options = options.copy()
+        if options.get("parallel", False):
+            task_chan = yield dispatch.MakeChannel()
+            yield dispatch.Spawn(threadpool.threadpool(task_chan))
+            new_options["threadpool"] = task_chan
+
+        yield from self._update_vertices(vertices, **new_options)
+
+        if "threadpool" in new_options:
+            finish_chan = yield dispatch.MakeChannel()
+            yield dispatch.Send(task_chan, (..., None, finish_chan, None),
+                                block=False)
+            yield dispatch.Recv(finish_chan)
+
 
 class NotUpToDateException(Exception):
     # Exception raised when a not-up-to-date Computation is encountered.
     pass
-
-
-@dispatch.tasklet
-def do_update(vertex, **options):
-    return (yield from vertex.update_all_elements())
 
 
 class ElementMTimeCache(dict):
@@ -530,36 +542,42 @@ class ComputationUpdateRuntime(VertexUpdateRuntime):
         if 0: yield
 
         # Bind input and output dataset names.
-        dataset_name_proxies = {}
-
-        parents = self.graph.parents_of(self)
-        dataset_name_proxies.update(dict((parent.name,
-                                          parent.name_proxy(element))
-                                         for parent in parents
-                                         if isinstance(parent,
-                                                       DatasetUpdateRuntime)))
-
-        children = self.graph.children_of(self)
-        for child in children:
-            if isinstance(child, DatasetUpdateRuntime):
-                dataset_name_proxies[child.name] = child.name_proxy(element)
-            elif isinstance(child, SurveyUpdateRuntime):
-                pass # TODO XXX Need a way to get the "associated" dataset from
-                     # a survey.
+        io_vertices = (self.graph.parents_of(self) +
+                       self.graph.children_of(self))
+        dataset_name_proxies = dict((v.name, v.name_proxy(element))
+                                    for v in io_vertices
+                                    if hasattr(v, "name_proxy"))
+        # Note: filename-surveyed output datasets' names are not available in
+        # the command template.
 
         command = element.render_template(self.command_template,
                                           extra_names=dataset_name_proxies)
-        print(command)
-        # TODO Command needs to be executed in thread pool.
-        with subprocess.Popen(command, shell=True) as proc:
-            # TODO Capture stdout and stderr (need select.select())
-            proc.wait()
-            if proc.returncode:
-                # TODO Remove output files (by calling dsets and match surveys)
-                # XXX For now, we raise unconditionally.
-                raise CalledProcessError("command returned exit status of "
-                                         "{:d}: {}".format(proc.returncode,
-                                                           command))
+
+        def task_func():
+            print(command)
+            with subprocess.Popen(command, shell=True) as proc:
+                # TODO Capture stdout and stderr (need select.select())
+                proc.wait()
+                return proc.returncode
+
+        if "threadpool" in options:
+            completion_chan = yield dispatch.MakeChannel()
+            yield dispatch.Send(options["threadpool"],
+                                (task_func, None, completion_chan,
+                                 self.occupancy))
+            # Wait for task_func() to finish.
+            _, retval, exc_info = yield dispatch.Recv(completion_chan)
+            if exc_info:
+                raise exc_info
+        else:
+            # Run serially.
+            retval = task_func()
+
+        if retval:
+            # TODO Remove output files (by calling dsets and match surveys)
+            # For now, we raise unconditionally.
+            raise CalledProcessError("command returned exit status of "
+                                     "{:d}: {}".format(retval, command))
 
 
 class SurveyUpdateRuntime(VertexUpdateRuntime):

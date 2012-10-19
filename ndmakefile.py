@@ -2,6 +2,7 @@ from collections import OrderedDict
 import collections
 import configparser
 import functools
+import sys
 
 import depgraph
 import template
@@ -538,23 +539,23 @@ class NDMakefile:
                 new_template("__compute_{}".format(section.name), 
                              section.entries["command"])
 
-        parallel = section.entries.get("parallel", "no")
+        parallel = section.entries.get("parallel", "no").strip()
         try:
             if parallel == "yes":
-                parallel = True # Same as 1.0.
+                occupancy = 1
             elif parallel == "no":
-                parallel = False # Serial execution.
-            elif parallel[-1] == "%":
-                # Fraction of core count.
-                parallel = float(parallel[:-1]) / 100.0
+                occupancy = sys.maxsize
+            elif parallel.startswith("1/"):
+                occupancy = int(parallel[2:])
+                assert occupancy > 0
             else:
-                # Number of processes.
-                parallel = int(parallel)
+                assert false
         except:
-            raise SyntaxError("invalid `parallel' specifier",
+            raise SyntaxError("invalid `parallel' specifier: `{}'".
+                              format(parallel),
                               "compute", section.name)
 
-        compute = depgraph.Computation(section.name, scope, tmpl, parallel)
+        compute = depgraph.Computation(section.name, scope, tmpl, occupancy)
         self.add_vertex(compute)
 
         for input in section.entries.get("input", "").split():
