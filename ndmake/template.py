@@ -1,9 +1,8 @@
 import jinja2, jinja2.meta, jinja2.sandbox
 import re
 import shlex
-import sys
 
-import debug
+from ndmake import debug
 
 dprint = debug.dprint_factory(__name__, False)
 

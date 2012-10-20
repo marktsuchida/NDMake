@@ -1,10 +1,9 @@
-# Python 3
-
-import dispatch
 import multiprocessing
 import queue
 import sys
 import threading
+
+from ndmake import dispatch
 
 
 __doc__ = """Thread pool for use from tasklets."""

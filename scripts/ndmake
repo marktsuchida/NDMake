@@ -1,0 +1,4 @@
+#!/usr/local/bin/python3.3
+import ndmake.main
+ndmake.main.run()
+

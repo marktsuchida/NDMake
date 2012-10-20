@@ -1,12 +1,11 @@
-from collections import OrderedDict
 import collections
 import configparser
 import functools
 import sys
 
-import depgraph
-import template
-import debug
+from ndmake import depgraph
+from ndmake import template
+from ndmake import debug
 
 dprint = debug.dprint_factory(__name__, False)
 

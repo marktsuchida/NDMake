@@ -1,16 +1,15 @@
 from collections import OrderedDict
 import os.path
-import shlex
 import subprocess
 import sys
 import time
 
-import debug
-import depgraph
-import dispatch
-import files
-import template
-import threadpool
+from ndmake import debug
+from ndmake import depgraph
+from ndmake import dispatch
+from ndmake import files
+from ndmake import template
+from ndmake import threadpool
 
 dprint_mux = debug.dprint_factory(__name__, False)
 dprint_traverse = debug.dprint_factory(__name__, False)

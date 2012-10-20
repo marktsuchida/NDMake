@@ -1,12 +1,11 @@
-from collections import OrderedDict
 import collections
-import warnings
 import functools
 import inspect
 import itertools
 import shlex
-import template
-import debug
+
+from ndmake import debug
+from ndmake import template
 
 
 dprint = debug.dprint_factory(__name__, True)
