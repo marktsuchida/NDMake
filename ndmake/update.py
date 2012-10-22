@@ -1,4 +1,5 @@
 from collections import OrderedDict
+import multiprocessing
 import os.path
 import subprocess
 import sys
@@ -279,8 +280,11 @@ class Update:
     def update_vertices(self, vertices, **options):
         new_options = options.copy()
         if options.get("parallel", False):
+            jobs = options.get("jobs")
+            if not jobs or jobs < 1:
+                jobs = multiprocessing.cpu_count()
             task_chan = yield dispatch.MakeChannel()
-            yield dispatch.Spawn(threadpool.threadpool(task_chan))
+            yield dispatch.Spawn(threadpool.threadpool(task_chan, jobs))
             new_options["threadpool"] = task_chan
 
         yield from self._update_vertices(vertices, **new_options)

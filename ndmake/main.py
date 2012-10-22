@@ -121,14 +121,17 @@ def run(argv=sys.argv):
     if not vertices_to_update:
         vertices_to_update = graph.sinks()
 
-    if not args.jobs and args.parallel:
+    if args.parallel and not args.jobs:
         args.jobs = multiprocessing.cpu_count()
     if args.jobs is not None and args.jobs < 1:
         raise ValueError("--jobs argument must be at least 1 (got {:d})".
                          format(args.jobs))
+    if args.jobs is not None and args.jobs > 1:
+        args.parallel = True
 
     updater = update.Update(graph)
     dispatch.start_with_tasklet(updater.update_vertices(vertices_to_update,
+                                                        parallel=args.parallel,
                                                         jobs=args.jobs))
 
 
