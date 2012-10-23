@@ -367,6 +367,20 @@ class VertexUpdateRuntime(depgraph.RuntimeDecorator):
             yield dispatch.Spawn(self.update_element(element, is_full,
                                                      **options),
                                  return_chan=completion_chan)
+
+            # With the current implementation of dispatch.py, having a large
+            # number of channels with pending messages slows down the scheduler
+            # significantly. Until this issue is fixed (if ever), we keep down
+            # the number of active channels by preemptively demultiplexing the
+            # completion notification channels. The chunk size of 11 has been
+            # determined empirically, but run time is roughly constant with
+            # chunk sizes of 2-32.
+            if len(completion_chans) > 11:
+                chunk_complete_chan = yield dispatch.MakeChannel()
+                yield dispatch.Spawn(demultiplex(completion_chans),
+                                     return_chan = chunk_complete_chan)
+                completion_chans = [chunk_complete_chan]
+
         all_complete_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(demultiplex(completion_chans),
                              return_chan=all_complete_chan)
