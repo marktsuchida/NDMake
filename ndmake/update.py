@@ -12,10 +12,11 @@ from ndmake import files
 from ndmake import template
 from ndmake import threadpool
 
-dprint_mux = debug.dprint_factory(__name__, False)
-dprint_traverse = debug.dprint_factory(__name__, False)
-dprint_mtime = debug.dprint_factory(__name__, False)
-dprint = debug.dprint_factory(__name__, False)
+dprint_mux = debug.dprint_factory(__name__, "mux")
+dprint_traverse = debug.dprint_factory(__name__, "traverse")
+dprint_mtime = debug.dprint_factory(__name__, "mtime")
+dprint = debug.dprint_factory(__name__)
+
 def strfmtime(mtime):
     return (time.strftime("%Y%m%dT%H%M%S", time.localtime(mtime)) +
             ".{:04d}".format(round(mtime % 1 * 10000)))

@@ -7,7 +7,7 @@ from ndmake import depgraph
 from ndmake import template
 from ndmake import debug
 
-dprint = debug.dprint_factory(__name__, False)
+dprint = debug.dprint_factory(__name__)
 
 # Parse an ndmake input file (an ndmakefile).
 #

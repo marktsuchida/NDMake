@@ -4,7 +4,7 @@ import shlex
 
 from ndmake import debug
 
-dprint = debug.dprint_factory(__name__, False)
+dprint = debug.dprint_factory(__name__)
 
 # Notes.
 # - There was the idea of a list-template. It might be possible to list-ify

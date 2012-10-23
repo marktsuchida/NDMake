@@ -2,6 +2,7 @@ import argparse
 import multiprocessing
 import sys
 
+from ndmake import debug
 from ndmake import depgraph
 from ndmake import dispatch
 from ndmake import ndmakefile
@@ -70,18 +71,23 @@ def run(argv=sys.argv):
     parser.add_argument("-G", "--write-section-graph", metavar="FILE",
                         help="write input file section dependency graph in "
                         "GraphViz dot format to FILE (mostly for debugging)")
-    parser.add_argument("-d", "--debug", metavar="FLAGS",
-                        help="not implemented")
+    parser.add_argument("-d", "--debug", metavar="CATEGORIES",
+                        help="currently allowed CATEGORIES (comma-separated) "
+                        "are: {}".format(", ".join(debug.categories())))
 
     args = parser.parse_args()
 
     unimplemented_options = ["assume_new", "assume_old", "check_symlink_times",
-                             "debug", "dry_run", "ignore_errors", "keep_going",
+                             "dry_run", "ignore_errors", "keep_going",
                              "question", "silent", "touch", "version"]
     for option in unimplemented_options:
         if vars(args)[option]:
             raise NotImplementedError("option not yet implemented: --{}".
                                       format(option.replace("_", "-")))
+
+    if args.debug:
+        for category in (c.lower().strip() for c in args.debug.split(",")):
+            debug.enable_dprint(category)
 
     with open(args.file) as file:
         input_file = ndmakefile.NDMakefile(file)

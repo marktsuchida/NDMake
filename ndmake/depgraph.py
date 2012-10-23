@@ -8,9 +8,10 @@ from ndmake import debug
 from ndmake import template
 
 
-dprint = debug.dprint_factory(__name__, True)
-dprint_iter = debug.dprint_factory(__name__, False)
-dprint_extent = debug.dprint_factory(__name__, False)
+dprint = debug.dprint_factory(__name__)
+dprint_iter = debug.dprint_factory(__name__, "iter")
+dprint_extent = debug.dprint_factory(__name__, "extent")
+
 def abstract_method_call(object_, method_name):
     class_name = type(object_).__name__
     return "abstract method {} called on {} instance".format(method_name,
