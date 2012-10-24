@@ -536,7 +536,7 @@ class NDMakefile:
                 new_template("__compute_{}".format(section.name), 
                              section.entries["command"])
 
-        parallel = section.entries.get("parallel", "no").strip()
+        parallel = section.entries.get("parallel", "yes").strip()
         try:
             if parallel == "yes":
                 occupancy = 1
