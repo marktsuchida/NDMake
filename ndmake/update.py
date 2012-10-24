@@ -14,12 +14,20 @@ from ndmake import threadpool
 
 dprint_mux = debug.dprint_factory(__name__, "mux")
 dprint_traverse = debug.dprint_factory(__name__, "traverse")
-dprint_mtime = debug.dprint_factory(__name__, "mtime")
+_dprint_mtime = debug.dprint_factory(__name__, "mtime")
 dprint = debug.dprint_factory(__name__)
 
 def strfmtime(mtime):
     return (time.strftime("%Y%m%dT%H%M%S", time.localtime(mtime)) +
             ".{:04d}".format(round(mtime % 1 * 10000)))
+
+def dprint_mtime(mtime, *args):
+    if debug.dprint_enabled.get(__name__ + "_mtime"):
+        if isinstance(mtime, int) or isinstance(mtime, float):
+            _dprint_mtime("mtime", strfmtime(mtime), *args)
+        else:
+            _dprint_mtime("mtime", mtime, *args)
+
 
 # Traverse a depgraph to bring a vertex (or set of vertices) up to date.
 #
@@ -392,9 +400,9 @@ class DatasetUpdateRuntime(VertexUpdateRuntime):
         filename = element.render_template(self.filename_template)
         try:
             mtime = os.path.getmtime(filename)
-            dprint_mtime("mtime", strfmtime(mtime), filename)
+            dprint_mtime(mtime, filename)
         except FileNotFoundError:
-            dprint_mtime("mtime", "missing", filename)
+            dprint_mtime("missing", filename)
             return 0, MAX_TIME
         return mtime, mtime # oldest, newest
 
@@ -518,17 +526,17 @@ class ComputationUpdateRuntime(VertexUpdateRuntime):
         startstamp = os.path.join(self.cache_dir(element), "start")
         try:
             start = os.path.getmtime(startstamp)
-            dprint_mtime("mtime", strfmtime(start), startstamp)
+            dprint_mtime(start, startstamp)
         except FileNotFoundError:
-            dprint_mtime("mtime", "missing", startstamp)
+            dprint_mtime("missing", startstamp)
             start = 0
 
         finishstamp = os.path.join(self.cache_dir(element), "finish")
         try:
             finish = os.path.getmtime(finishstamp)
-            dprint_mtime("mtime", strfmtime(finish), finishstamp)
+            dprint_mtime(finish, finishstamp)
         except FileNotFoundError:
-            dprint_mtime("mtime", "missing", finishstamp)
+            dprint_mtime("missing", finishstamp)
             finish = MAX_TIME
 
         return start, finish
@@ -656,9 +664,9 @@ class SurveyerRuntime(depgraph.RuntimeDecorator):
         filename = self.cache_file(element)
         try:
             mtime = os.path.getmtime(filename)
-            dprint_mtime("mtime", strfmtime(mtime), filename)
+            dprint_mtime(mtime, filename)
         except FileNotFoundError:
-            dprint_mtime("mtime", "missing", filename)
+            dprint_mtime("missing", filename)
             return 0, MAX_TIME
         return mtime, mtime # oldest, newest
 
