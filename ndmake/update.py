@@ -572,7 +572,10 @@ class ComputationUpdateRuntime(VertexUpdateRuntime):
                                           extra_names=dataset_name_proxies)
 
         def task_func():
-            print(command)
+            # Avoid print(), which apparently flushes the output between the
+            # string and the newline.
+            sys.stdout.write(command + "\n")
+
             with subprocess.Popen(command, shell=True) as proc:
                 # TODO Capture stdout and stderr (need select.select())
                 proc.wait()
