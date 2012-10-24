@@ -685,18 +685,20 @@ class Space:
 
         assigned_extents = []
         coords = {}
+        element_space_dimensions = element.space.dimensions
         for extent in self.extents:
-            if extent.dimension not in element.space.dimensions:
+            dimension = extent.dimension
+            if dimension not in element_space_dimensions:
                 if require_full:
                     raise ValueError("{} is not an element of {}".
                                      format(element, self))
                 continue
-            if not element.space[extent.dimension].issubextent(extent):
+            if not element.space[dimension].issubextent(extent):
                 raise ValueError("{} of {} is not subextent of {} of {}".
-                                 format(element.space[extent.dimension],
+                                 format(element.space[dimension],
                                         element, extent, self))
             assigned_extents.append(extent)
-            coords[extent.dimension] = element[extent.dimension]
+            coords[dimension] = element[dimension]
         return Element(Space(assigned_extents), coords)
 
     @runtime
@@ -704,24 +706,26 @@ class Space:
         if element is None:
             element = Element()
 
-        # Scan consecutive dimensions assigned a value by element.
+        # Scan _consecutive_ dimensions assigned a value by element.
         assigned_extents = []
         base_coords = {}
-        i = -1
-        for i, extent in enumerate(self.extents):
-            if extent.dimension in element.space.dimensions:
-                if not element.space[extent.dimension].issubextent(extent):
-                    raise ValueError("{} of {} is not subextent of {} of {}".
-                                     format(element.space[extent.dimension],
-                                            element, extent, self))
-                assigned_extents.append(extent)
-                base_coords[extent.dimension] = element[extent.dimension]
-            else:
+        element_space_dimensions = element.space.dimensions
+        for extent in self.extents:
+            dimension = extent.dimension
+            if dimension not in element_space_dimensions:
                 break
+            if not element.space[dimension].issubextent(extent):
+                raise ValueError("{} of {} is not subextent of {} of {}".
+                                 format(element.space[dimension],
+                                        element, extent, self))
+            assigned_extents.append(extent)
+            base_coords[dimension] = element[dimension]
 
         if len(assigned_extents) == self.ndims:
             # Element assigned coordinates to all of our dimensions.
-            element = self.canonicalized_element(element)
+            # (We generate a canonical element directly, without having to call
+            # self.canonicalized_element().)
+            element = Element(self, base_coords)
             dprint_iter(self, "iterate({}): yielding full element".
                         format(element))
             yield (element, True) # Flag indicating full element.
@@ -733,13 +737,15 @@ class Space:
 
         # Scan remaining (nonconsecutive) dimensions assigned by element.
         for extent in self.extents[len(assigned_extents):]:
-            if extent.dimension in element.space.dimensions:
-                if not element.space[extent.dimension].issubextent(extent):
-                    raise ValueError("{} of {} is not subextent of {} of {}".
-                                     format(element.space[extent.dimension],
-                                            element, extent, self))
-                assigned_extents.append(extent)
-                base_coords[extent.dimension] = element[extent.dimension]
+            dimension = extent.dimension
+            if dimension not in element_space_dimensions:
+                continue
+            if not element.space[dimension].issubextent(extent):
+                raise ValueError("{} of {} is not subextent of {} of {}".
+                                 format(element.space[dimension],
+                                        element, extent, self))
+            assigned_extents.append(extent)
+            base_coords[dimension] = element[dimension]
 
         extent_runtime = dynamic_graph.runtime(extent_to_iterate)
         if extent_runtime.is_demarcated(element):
