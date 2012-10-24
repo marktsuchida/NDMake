@@ -80,10 +80,21 @@ class StaticGraph:
             fprint = functools.partial(print, file=file)
             fprint("digraph depgraph {")
             for id, vertex in self._id_vertex_map.items():
-                fprint("v{:d} [label=\"{} {}\"];".
-                       format(id,
-                              vertex.__class__.__name__,
-                              vertex.name))
+                label = vertex.name
+                shape = "box"
+                color = "black"
+                if isinstance(vertex, Computation):
+                    shape = "box"
+                    color = "black"
+                elif isinstance(vertex, Dataset):
+                    shape = "folder"
+                    color = "navy"
+                elif isinstance(vertex, Survey):
+                    label = " ".join((vertex.__class__.__name__, vertex.name))
+                    shape = "box"
+                    color = "red"
+                fprint("v{:d} [label=\"{}\" shape=\"{}\" color=\"{}\"];".
+                       format(id, label, shape, color))
             for parent, children in self._parents.items():
                 for child in children:
                     fprint("v{:d} -> v{:d};".format(child, parent))

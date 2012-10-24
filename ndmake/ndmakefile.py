@@ -318,10 +318,36 @@ class NDMakefile:
             fprint = functools.partial(print, file=file)
             fprint("digraph sections {")
             for section in self.sections:
-                fprint("{} [label=\"{}\"];".format(vertex_id(section),
-                                                   " ".join(section)))
+                kind = self.sections[section].kind
+                label = " ".join(section)
+                shape = "box"
+                color = "black"
+                if kind == "compute":
+                    shape = "box"
+                    color = "black"
+                elif kind == "dataset":
+                    shape = "folder"
+                    color = "navy"
+                elif kind in ("dimension", "subdomain"):
+                    shape = "box"
+                    color = "red"
+                elif kind == "global":
+                    color = "darkgreen"
+                fprint("{} [label=\"{}\" shape=\"{}\" color=\"{}\"];".
+                       format(vertex_id(section), label, shape, color))
             for parent, child in self.edges:
-                fprint("{} -> {};".format(vertex_id(parent), vertex_id(child)))
+                parent_kind = self.sections[parent].kind
+                child_kind = self.sections[child].kind
+                dim_or_dom = ("dimension", "subdomain")
+                color = "black"
+                if parent_kind in dim_or_dom and child_kind not in dim_or_dom:
+                    color = "gray"
+                elif parent_kind in dim_or_dom and child_kind in dim_or_dom:
+                    color = "red"
+                elif parent_kind == "global" or child_kind == "global":
+                    color = "darkgreen"
+                fprint("{} -> {} [color=\"{}\"];".
+                       format(vertex_id(parent), vertex_id(child), color))
             fprint("}")
 
     def topologically_sort_sections(self):
