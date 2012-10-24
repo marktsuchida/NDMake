@@ -380,8 +380,6 @@ class Dimension:
 
 class Extent:
     def __init__(self, source):
-        self._dimension = None
-        self._scope = None
         self.source = source # Template or Survey
         self.name = None
         self.superextent = None
@@ -389,14 +387,6 @@ class Extent:
 
     def __repr__(self):
         return "<{} {}>".format(self.__class__.__name__, self.full_name)
-
-    @property
-    def dimension(self):
-        assert False, abstract_method_call(self, "dimension")
-
-    @property
-    def scope(self):
-        assert False, abstract_method_call(self, "scope")
 
     @property
     def full_name(self):
@@ -478,17 +468,9 @@ class ArithmeticExtentMixin(SequenceExtentMixin):
 class FullExtent(Extent, SequenceExtentMixin):
     def __init__(self, dimension, scope, source):
         super().__init__(source)
-        self._dimension = dimension
-        self._scope = scope
+        self.dimension = dimension
+        self.scope = scope
         # TODO Check that self.dimension is not in self.scope.extents
-
-    @property
-    def dimension(self):
-        return self._dimension
-
-    @property
-    def scope(self):
-        return self._scope
 
     @property
     def full_name(self):
@@ -519,15 +501,8 @@ class Subextent(Extent):
         super().__init__(source)
         self.name = name
         self.superextent = superextent
-        # TODO Check that self.scope is subspace of self.superextent.scope.
-
-    @property
-    def dimension(self):
-        return self.superextent.dimension
-
-    @property
-    def scope(self):
-        return self.superextent.scope
+        self.dimension = superextent.dimension
+        self.scope = superextent.scope
 
     @property
     def full_name(self):
@@ -669,18 +644,13 @@ class Space:
             checked_dimensions.add(manifest_extent.dimension)
         
         self.extents = sorted_extents
+        # Some useful attributes:
+        self.dimensions = list(e.dimension for e in self.extents)
+        self.ndims = len(self.dimensions)
 
     def __repr__(self):
         return "<Space [{}]>".format(", ".join(e.full_name
                                                for e in self.extents))
-
-    @property
-    def ndims(self):
-        return len(self.extents)
-
-    @property
-    def dimensions(self):
-        return list(e.dimension for e in self.extents)
 
     def __getitem__(self, dimension):
         for extent in self.extents:
