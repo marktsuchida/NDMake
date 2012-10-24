@@ -584,7 +584,22 @@ class IndexedSubextent(Subextent):
 #
 
 class Space:
+    # The __init__() implemented below can take up a significant portion of the
+    # time taken to iterate over spaces, so we memoize Space instances.
+    # There are more general and sophisticated methods to memoize class
+    # instances, but for now we assume that Space will not be subclassed.
+    _instances = {} # tuple(manifest_extents) -> Space
+    def __new__(cls, manifest_extents=[]):
+        key = tuple(manifest_extents)
+        if key not in cls._instances:
+            cls._instances[key] = super(Space, cls).__new__(cls)
+        return cls._instances[key]
+
     def __init__(self, manifest_extents=[]):
+        if hasattr(self, "manifest_extents"):
+            # Cached instance.
+            return
+
         manifest_dims = frozenset(extent.dimension
                                   for extent in manifest_extents)
         if len(manifest_extents) > len(manifest_dims):
