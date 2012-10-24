@@ -260,10 +260,12 @@ class Update:
         # Perform the update action.
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing downward:", vertex)
+        print("starting check/update of {}".format(vertex.static_object))
         completion_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(vertex.update_all_elements(**options),
                              return_chan=completion_chan)
         yield dispatch.Recv(completion_chan)
+        print("finished check/update of {}".format(vertex.static_object))
 
     @dispatch.tasklet
     def _update_vertices(self, vertices, **options):
