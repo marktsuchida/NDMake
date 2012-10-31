@@ -6,7 +6,6 @@ from ndmake import debug
 from ndmake import depgraph
 from ndmake import dispatch
 from ndmake import ndmakefile
-from ndmake import update
 
 
 __doc__ = """Flexible automation for iterative computations."""
@@ -135,10 +134,10 @@ def run(argv=sys.argv):
     if args.jobs is not None and args.jobs > 1:
         args.parallel = True
 
-    updater = update.Update(graph)
-    dispatch.start_with_tasklet(updater.update_vertices(vertices_to_update,
-                                                        parallel=args.parallel,
-                                                        jobs=args.jobs))
+    tasklet = graph.update_vertices_with_threadpool(vertices_to_update,
+                                                    parallel=args.parallel,
+                                                    jobs=args.jobs)
+    dispatch.start_with_tasklet(tasklet)
 
 
 if __name__ == "__main__":

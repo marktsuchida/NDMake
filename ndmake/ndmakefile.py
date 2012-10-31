@@ -15,9 +15,9 @@ dprint = debug.dprint_factory(__name__)
 # format) are first transformed into a graph of sections (Section objects) that
 # describes the declarative dependencies between them (so that they can appear
 # in arbitrary order in the input file). The section graph is topologically
-# sorted before being transformed into a dependency graph (depgraph.StaticGraph
-# and associated objects), so that we do not need to introduce placeholders in
-# the depgraph.
+# sorted before being transformed into a dependency graph (depgraph.Graph and
+# associated objects), so that we do not need to introduce placeholders in the
+# depgraph.
 
 
 Section = collections.namedtuple("Section", ("kind", "name", "entries"))
@@ -379,7 +379,7 @@ class NDMakefile:
         self.sorted_sections = reversed(sorted_sections)
 
     def parse_sorted_sections(self):
-        self.graph = depgraph.StaticGraph()
+        self.graph = depgraph.Graph()
         for kind, name in self.sorted_sections:
             dprint("parsing", "[{} {}]".format(kind, name))
             section = self.sections[(kind, name)]
@@ -462,7 +462,7 @@ class NDMakefile:
                 tfm_tmpl = None
             surveyer = depgraph.ValuesCommandSurveyer(name, scope,
                                                       tmpl, tfm_tmpl)
-            survey = depgraph.Survey(name, scope, surveyer)
+            survey = depgraph.Survey(self.graph, name, scope, surveyer)
             self.add_vertex(survey)
             source = survey
 
@@ -473,7 +473,7 @@ class NDMakefile:
                                 section.entries["range_command"])
             surveyer = depgraph.IntegerTripletCommandSurveyer(name, scope,
                                                               tmpl)
-            survey = depgraph.Survey(name, scope, surveyer)
+            survey = depgraph.Survey(self.graph, name, scope, surveyer)
             self.add_vertex(survey)
             source = survey
 
@@ -484,7 +484,7 @@ class NDMakefile:
                                 section.entries["slice_command"])
             surveyer = depgraph.IntegerTripletCommandSurveyer(name, scope,
                                                               tmpl)
-            survey = depgraph.Survey(name, scope, surveyer)
+            survey = depgraph.Survey(self.graph, name, scope, surveyer)
             self.add_vertex(survey)
             source = survey
 
@@ -501,7 +501,7 @@ class NDMakefile:
                 tfm_tmpl = None
             surveyer = depgraph.FilenameSurveyer(name, scope,
                                                  match_tmpl, tfm_tmpl)
-            survey = depgraph.Survey(name, scope, surveyer)
+            survey = depgraph.Survey(self.graph, name, scope, surveyer)
             self.add_vertex(survey)
             source = survey
             
@@ -542,7 +542,7 @@ class NDMakefile:
                 new_template("__dataset_{}".format(section.name), 
                              section.entries["filename"])
 
-        dataset = depgraph.Dataset(section.name, scope, tmpl)
+        dataset = depgraph.Dataset(self.graph, section.name, scope, tmpl)
         self.add_vertex(dataset)
 
         if "producer" in section.entries:
@@ -578,7 +578,8 @@ class NDMakefile:
                               format(parallel),
                               "compute", section.name)
 
-        compute = depgraph.Computation(section.name, scope, tmpl, occupancy)
+        compute = depgraph.Computation(self.graph, section.name, scope,
+                                       tmpl, occupancy)
         self.add_vertex(compute)
 
         for input in section.entries.get("input", "").split():
