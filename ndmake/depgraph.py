@@ -340,21 +340,8 @@ class Graph:
                     fprint("v{:d} -> v{:d};".format(child, parent))
             fprint("}")
 
-    def check_consistency(self):
-        for vertex in self._vertex_id_map.keys():
-            if isinstance(vertex, VertexPlaceholder):
-                raise TypeError("placeholder remains in graph")
-
-    def vertex_by_name(self, name, type_, allow_placeholder=False):
-        """Return a vertex with the given name and type.
-
-        Optionally, add a vertex placeholder with the given name and type.
-        The placeholder can later be replaced with the real vertex.
-        """
-        if allow_placeholder and (name, type_) not in self._name_id_map:
-            placeholder = VertexPlaceholder(name, type_)
-            self.add_vertex(placeholder)
-
+    def vertex_by_name(self, name, type_):
+        """Return a vertex with the given name and type."""
         try:
             vertex_id = self._name_id_map[(name, type_)]
         except KeyError:
@@ -368,9 +355,11 @@ class Graph:
         if name_key in self._name_id_map:
             existing_id = self._name_id_map[name_key]
             existing_vertex = self._id_vertex_map[existing_id]
-            if isinstance(existing_vertex, VertexPlaceholder):
-                self._id_vertex_map[existing_id] = vertex
+            if vertex is existing_vertex:
                 return existing_id
+            raise KeyError("a {} vertex named {} already exists".
+                           format(vertex.namespace_type.__name__,
+                                  vertex.name))
 
         vertex_id = next(self._vertex_id_generator)
         self._vertex_id_map[vertex] = vertex_id
@@ -596,19 +585,6 @@ class Vertex:
                              return_chan=completion_chan)
         yield dispatch.Recv(completion_chan)
         print("finished check/update of {}".format(self))
-
-
-class VertexPlaceholder(Vertex):
-    def __init__(self, name, type_):
-        super().__init__(name, Space())
-        self.type_ = type_
-
-    def __repr__(self):
-        return "<{} placeholder \"{}\">".format(self.type_.__name__, self.name)
-
-    @property
-    def namespace_type(self):
-        return self.type_
 
 
 #
