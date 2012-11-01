@@ -67,9 +67,9 @@ def run(argv=sys.argv):
     parser.add_argument("-g", "--write-graph", metavar="FILE",
                         help="write dependency graph in GraphViz dot format "
                         "to FILE")
-    parser.add_argument("-G", "--write-section-graph", metavar="FILE",
-                        help="write input file section dependency graph in "
-                        "GraphViz dot format to FILE (mostly for debugging)")
+    parser.add_argument("-G", "--write-pipeline", metavar="FILE",
+                        help="write static pipeline graph in GraphViz dot "
+                        "format to FILE (mostly for debugging)")
     parser.add_argument("-d", "--debug", metavar="CATEGORIES",
                         help="currently allowed CATEGORIES (comma-separated) "
                         "are: {}".format(", ".join(debug.categories())))
@@ -91,14 +91,19 @@ def run(argv=sys.argv):
     with open(args.file) as file:
         input_file = ndmakefile.NDMakefile(file)
 
-    if args.write_graph:
-        input_file.graph.write_graphviz(args.write_graph)
-    if args.write_section_graph:
-        input_file.write_sections_graphviz(args.write_section_graph)
-    if args.write_graph or args.write_section_graph:
-        sys.exit(0)
 
-    graph = input_file.graph
+    pipeline = input_file.pipeline()
+
+    if args.write_pipeline:
+        pipeline.write_graphviz(args.write_pipeline)
+        if not args.write_graph:
+            sys.exit(0)
+
+    graph = pipeline.depgraph()
+
+    if args.write_graph:
+        graph.write_graphviz(args.write_graph)
+        sys.exit(0)
 
     vertices_to_update = []
     for vertex_name in args.dataset_or_computation:
