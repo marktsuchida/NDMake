@@ -26,17 +26,19 @@ else:
 #   are distinguished by naming variables chan and hchan.
 
 
-class _OrderedSet(collections.OrderedDict):
-    # A lazy implementation whose inheritance is not correct.
+class _OrderedSet(collections.deque):
+    # Lazy implementation with only the used methods (add, remove, pop).
+    # This deque-based implementation is much faster than an OrderedDict-based
+    # implementation, at least for our purposes. Adding a set can speed up
+    # add() but slows down pop() and others and does not contribute to overall
+    # speedup.
     def add(self, m):
-        self[m] = True
-
-    def remove(self, m):
-        del self[m]
+        if m not in self:
+            self.append(m)
 
     def pop(self, last=True):
-        k, v = self.popitem(last=last)
-        return k
+        m = super().pop() if last else self.popleft()
+        return m
 
 
 class _EditablePriorityQueue():
