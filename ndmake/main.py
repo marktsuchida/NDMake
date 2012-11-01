@@ -5,7 +5,7 @@ import sys
 from ndmake import debug
 from ndmake import depgraph
 from ndmake import dispatch
-from ndmake import ndmakefile
+from ndmake import parse
 
 
 __doc__ = """Flexible automation for iterative computations."""
@@ -89,10 +89,7 @@ def run(argv=sys.argv):
             debug.enable_dprint(category)
 
     with open(args.file) as file:
-        input_file = ndmakefile.NDMakefile(file)
-
-
-    pipeline = input_file.pipeline()
+        pipeline = parse.read_ndmakefile(file)
 
     if args.write_pipeline:
         pipeline.write_graphviz(args.write_pipeline)

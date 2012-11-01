@@ -49,7 +49,7 @@ class Pipeline:
         self.edges.add((parent, child))
 
     def _check_identifier(self, name):
-        return re.match(r"[A-Za-z_][0-9A-Za-z_]*", name) is not None
+        return re.match("[A-Za-z_][0-9A-Za-z_]*", name) is not None
 
     def _dim_or_dom_key(self, name):
         items = name.split(".")
