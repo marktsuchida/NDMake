@@ -700,7 +700,6 @@ class Computation(Vertex):
         parents = graph.parents_of(self)
         newest_input_mtime = 0
         for parent in parents:
-            assert isinstance(parent, Dataset)
             parent_newest_mtime = parent.newest_mtime(element)
             newest_input_mtime = max(newest_input_mtime, parent_newest_mtime)
 
@@ -1029,13 +1028,17 @@ class Extent:
         assert False, "abstract method call"
 
     @property
-    def is_surveyed(self):
-        return isinstance(self.source, Survey)
+    def parent_vertex(self):
+        if isinstance(self.source, Survey):
+            return self.source
+        if self.superextent is not None:
+            return self.superextent.parent_vertex
+        return None
 
     def is_demarcated(self, element):
-        if not self.is_surveyed:
+        survey = self.parent_vertex
+        if survey is None:
             return True
-        survey = self.source
         return not not survey.is_result_available(element)
 
     def issubextent(self, other):

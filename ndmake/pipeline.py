@@ -287,10 +287,12 @@ class Pipeline:
     def _add_vertex_to_graph(self, graph, vertex):
         dprint("adding vertex", vertex)
         graph.add_vertex(vertex)
-        ancestoral_surveys = (extent.source
-                              for extent in vertex.scope.extents
-                              if extent.is_surveyed)
-        for survey in ancestoral_surveys:
+
+        # If the vertex's scope includes surveyed extents, the corresponding
+        # survey must be added as a parent.
+        parent_surveys = filter(None, (extent.parent_vertex
+                                       for extent in vertex.scope.extents))
+        for survey in parent_surveys:
             self._add_edge_to_graph(graph, survey, vertex)
 
     def _add_edge_to_graph(self, graph, vertex1, vertex2):
