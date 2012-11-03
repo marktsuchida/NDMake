@@ -276,6 +276,7 @@ class Pipeline:
             dprint("instantiating", "[{} {}]".format(kind, name))
             entity = self.entities[(kind, name)]
             getattr(self, "_instantiate_{}_entity".format(kind))(graph, entity)
+        graph.simplify_by_transitive_reduction()
         return graph
 
     def _get_extent_from_graph(self, graph, dim_or_dom_name):

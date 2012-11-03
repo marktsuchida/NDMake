@@ -395,6 +395,33 @@ class Graph:
             if child is other_vertex or self._is_ancestor(child, other_vertex):
                 return True
 
+    def simplify_by_transitive_reduction(self):
+        visited_ids = set()
+
+        def visit(vertex_id, previous_vertex_id):
+            visited_ids.add(vertex_id)
+
+            # Remove shortcut edges from visited ancestors.
+            for parent_id in list(self._parents.get(vertex_id, [])):
+                if parent_id is previous_vertex_id:
+                    continue
+
+                if parent_id in visited_ids:
+                    # Remove this edge.
+                    self._parents[vertex_id].remove(parent_id)
+                    self._children[parent_id].remove(vertex_id)
+
+            # Proceed to children.
+            for child_id in list(self._children.get(vertex_id, [])):
+                # Children may be removed during iteration.
+                if child_id in self._children.get(vertex_id, []):
+                    visit(child_id, vertex_id)
+
+            visited_ids.remove(vertex_id)
+
+        for vertex_id in self._id_vertex_map:
+            visit(vertex_id, None)
+
     def parents_of(self, vertex):
         """Return the parent vertices of the given vertex."""
         return list(self._id_vertex_map[i] for i in
