@@ -407,9 +407,10 @@ class Graph:
                     continue
 
                 if parent_id in visited_ids:
-                    # Remove this edge.
-                    self._parents[vertex_id].remove(parent_id)
-                    self._children[parent_id].remove(vertex_id)
+                    # Remove this edge if its tail is a Survey.
+                    if isinstance(self._id_vertex_map[parent_id], Survey):
+                        self._parents[vertex_id].remove(parent_id)
+                        self._children[parent_id].remove(vertex_id)
 
             # Proceed to children.
             for child_id in list(self._children.get(vertex_id, [])):
