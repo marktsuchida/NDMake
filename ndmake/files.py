@@ -27,5 +27,7 @@ def element_dirs(element):
                 format(extent.dimension.name,
                        escape_value_for_filename(element[extent.dimension]))
                 for extent in element.space.extents)
+    if not dirs:
+        return ""
     return os.path.join(*dirs)
 

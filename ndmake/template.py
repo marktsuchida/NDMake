@@ -32,7 +32,7 @@ class TemplateSet:
         e.filters["basename"] = os.path.basename
         e.filters["stripext"] = lambda p: os.path.splitext(p)[0]
         e.filters["fileext"] = lambda p: os.path.splitext(p)[1]
-        e.filters["shquote"] = shellquote
+        e.filters["shquote"] = lambda s: shlex.quote(str(s))
         e.filters["shsplit"] = lambda l: shlex.split(str(l))
 
         self.environment = e
@@ -90,12 +90,4 @@ class Template:
                "dict:", str(dict_) + ",",
                "result: \"\"\"{}\"\"\"".format(rendition))
         return rendition
-
-
-_before_unsafe_char = re.compile("(?=[^-_./A-Za-z0-9])")
-def shellquote(name):
-    if name:
-        return (_before_unsafe_char.sub(r"\\", name). # Prefix unsafe with '\'.
-                replace("\\\n", "'\n'")) # Handle newline specially.
-    return "''"
 

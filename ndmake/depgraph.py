@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import time
+import urllib.parse
 
 from ndmake import debug
 from ndmake import dispatch
@@ -624,6 +625,10 @@ class Dataset(Vertex):
         self.filename_template = filename_template
 
         self.mtimes = SpatialCache(self.scope, self.read_mtimes, mtime_extrema)
+        persistence_path = os.path.join(files.ndmake_dir(), "data", self.name)
+        self.mtimes.set_persistence(mtime_reader, mtime_writer,
+                                    path=persistence_path, filename="mtimes",
+                                    level=2)
 
     def read_mtimes(self, element):
         filename = element.render_template(self.filename_template)
@@ -640,9 +645,12 @@ class Dataset(Vertex):
         oldest_mtime, newest_mtime = self.mtimes[Element()]
         if oldest_mtime > 0:
             dprint_update(self, "all elements up to date")
+            self.mtimes.save_to_file()
             return
 
         yield from super().update_all_elements(graph, **options)
+
+        self.mtimes.save_to_file()
 
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, **options):
@@ -746,6 +754,7 @@ class Computation(Vertex):
                                                   if isinstance(parent,
                                                                 Dataset))
             if newest_input_mtime <= oldest_child_mtime:
+                dprint_update(self, "all elements up to date")
                 return
 
         yield from super().update_all_elements(graph, **options)
@@ -846,6 +855,11 @@ class Survey(Vertex):
 
         self.mtimes = SpatialCache(self.scope,
                                    self.surveyer.read_mtimes, mtime_extrema)
+        persistence_path = os.path.join(files.ndmake_dir(), "survey",
+                                        self.name)
+        self.mtimes.set_persistence(mtime_reader, mtime_writer,
+                                    path=persistence_path, filename="mtimes",
+                                    level=2)
 
     def is_result_available(self, element):
         # Iff we've been updated, the results are stored in self.results.
@@ -855,6 +869,11 @@ class Survey(Vertex):
     def result(self, element):
         element = self.scope.canonicalized_element(element)
         return self.results[element]
+
+    @dispatch.tasklet
+    def update_all_elements(self, graph, **options):
+        yield from super().update_all_elements(graph, **options)
+        self.mtimes.save_to_file()
 
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, **options):
@@ -1304,6 +1323,14 @@ def mtime_extrema(iter):
     return oldest, newest
 
 
+def mtime_reader(s):
+    return tuple(float(t) for t in s.split())
+
+
+def mtime_writer(mtimes):
+    return "{:f} {:f}".format(*mtimes)
+
+
 class SpatialCache:
     # A data structure storing values associated with every possible partial or
     # full element of a space.
@@ -1318,16 +1345,32 @@ class SpatialCache:
             self.extent = self.space.extents[self.level]
         self.load = loader
         self.combine = combiner
+
         self.cached = None # The cached value.
         self.map = {} # 1st-D key -> SpatialCache for next level
 
+        self.has_loaded_from_file = False
+        self.has_deleted_file = False
+
+    def set_persistence(self, reader, writer, path, filename, level):
+        # Only the toplevel SpatialCache uses these attributes.
+        self.reader = reader
+        self.writer = writer
+        self.persistence_filename = os.path.join(path, filename)
+        self.persistence_level = level
+
     def __getitem__(self, element):
+        # Used only on the toplevel SpatialCache.
+        self.load_from_file()
         element = self.space.canonicalized_element(element)
         return self._get(element, 0, Element())
 
     def __delitem__(self, element):
+        # Used only on the toplevel SpatialCache.
+        self.load_from_file()
         element = self.space.canonicalized_element(element)
         self._invalidate(element, 0)
+        self.delete_file()
 
     def _subtree(self, key):
         if key not in self.map:
@@ -1391,6 +1434,83 @@ class SpatialCache:
         for key in self.extent.iterate(key_element):
             self._subtree(key)._invalidate(key_element, dim_index)
 
+    def _set(self, element, value, dim_index):
+        if not (len(element) - dim_index):
+            self.cached = value
+            return
+
+        key = element[self.extent.dimension]
+        self._subtree(key)._set(element, value, dim_index + 1)
+
+    def write_file_lines(self, writer, fprint, element, level):
+        if self.cached is not None:
+            fprint(shlex.quote(os.path.join("/", files.element_dirs(element))),
+                   shlex.quote(writer(self.cached)))
+        if len(element) == self.space.ndims or not level:
+            return
+        for key, subtree in self.map.items():
+            subtree.write_file_lines(writer, fprint,
+                                     element.appended(self.extent, key),
+                                     level - 1)
+
+    def load_from_file(self):
+        if self.has_loaded_from_file or self.has_deleted_file:
+            return
+        if not hasattr(self, "persistence_filename"):
+            return
+        if not os.path.exists(self.persistence_filename):
+            self.has_deleted_file = True
+            return
+
+        with open(self.persistence_filename) as file:
+            try:
+                for line in file:
+                    element_path, value_string = shlex.split(line)
+                    element_items = element_path.split("/")
+                    assert not element_items[0]
+                    if not element_items[1]:
+                        element_items.pop()
+                    coords = {}
+                    for i, component in enumerate(element_items[1:]):
+                        dim = self.space.dimensions[i]
+                        dim_name, escaped_key = component.split("=", 1)
+                        assert dim_name == dim.name
+                        key = urllib.parse.unquote(escaped_key)
+                        coords[dim] = key
+                    element = Element(Space(self.space.extents[:len(coords)]),
+                                      coords)
+                    value = self.reader(value_string)
+                    self._set(element, value, 0)
+            except:
+                self.cached = None
+                self.map.clear()
+                # TODO Print message.
+                # self.delete_file()
+                return
+
+        self.has_loaded_from_file = True
+
+    def save_to_file(self):
+        if not hasattr(self, "persistence_filename"):
+            return
+
+        os.makedirs(os.path.dirname(self.persistence_filename), exist_ok=True)
+        with open(self.persistence_filename, "w") as file:
+            fprint = functools.partial(print, file=file)
+            self.write_file_lines(self.writer, fprint,
+                                  Element(), self.persistence_level)
+
+        self.has_deleted_file = False
+
+    def delete_file(self):
+        if self.has_deleted_file:
+            return
+        if not hasattr(self, "persistence_filename"):
+            return
+        if os.path.exists(self.persistence_filename):
+            os.unlink(self.persistence_filename)
+        self.has_deleted_file = True
+
 
 #
 # Templating support
@@ -1418,7 +1538,7 @@ class DatasetNameProxy:
             assert is_full
             filenames.append(full_element.
                              render_template(self.__dataset.filename_template))
-        return " ".join(template.shellquote(name) for name in filenames)
+        return " ".join(shlex.quote(name) for name in filenames)
 
     def __str__(self):
         return self.__filename_or_filenames(self.__default_element)
