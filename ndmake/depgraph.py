@@ -649,7 +649,6 @@ class Dataset(Vertex):
             return
 
         yield from super().update_all_elements(graph, **options)
-
         self.mtimes.save_to_file()
 
     @dispatch.tasklet
@@ -673,7 +672,7 @@ class Dataset(Vertex):
             filename = element.render_template(self.filename_template)
             parents = graph.parents_of(self)
             for parent in parents:
-                if isinstance(parent.static_object, Computation):
+                if isinstance(parent, Computation):
                     raise MissingFileException("file {filename} (member of "
                                                "dataset {dataset}; output of "
                                                "compute {compute}) missing".
@@ -742,22 +741,39 @@ class Computation(Vertex):
         self.command_template = command_template
         self.occupancy = occupancy
 
-    @dispatch.tasklet
-    def update_all_elements(self, graph, **options):
-        oldest_child_mtime, _ = mtime_extrema(child.mtimes[Element()]
+        is_up_to_date = functools.partial(self.is_up_to_date, graph)
+        self.statuses = SpatialCache(self.scope, is_up_to_date, all)
+        persistence_path = os.path.join(files.ndmake_dir(), "compute",
+                                        self.name)
+        self.statuses.set_persistence(lambda s: bool(int(s)),
+                                      lambda b: "1" if b else "0",
+                                      path=persistence_path, filename="status",
+                                      level=2)
+
+    def is_up_to_date(self, graph, element):
+        oldest_child_mtime, _ = mtime_extrema(child.mtimes[element]
                                               for child
                                               in graph.children_of(self))
         if oldest_child_mtime > 0:
-            _, newest_input_mtime = mtime_extrema(parent.mtimes[Element()]
+            _, newest_input_mtime = mtime_extrema(parent.mtimes[element]
                                                   for parent
                                                   in graph.parents_of(self)
                                                   if isinstance(parent,
                                                                 Dataset))
             if newest_input_mtime <= oldest_child_mtime:
-                dprint_update(self, "all elements up to date")
-                return
+                return True
+        return False
+
+    @dispatch.tasklet
+    def update_all_elements(self, graph, **options):
+        status = self.statuses[Element()]
+        if status:
+            dprint_update(self, "all elements up to date")
+            self.statuses.save_to_file()
+            return
 
         yield from super().update_all_elements(graph, **options)
+        self.statuses.save_to_file()
 
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, **options):
@@ -770,23 +786,14 @@ class Computation(Vertex):
             # XXX Print if requested.
             return
 
-        oldest_child_mtime, _ = mtime_extrema(child.mtimes[element]
-                                              for child
-                                              in graph.children_of(self))
-        if oldest_child_mtime > 0:
-            _, newest_input_mtime = mtime_extrema(parent.mtimes[element]
-                                                  for parent
-                                                  in graph.parents_of(self)
-                                                  if isinstance(parent,
-                                                                Dataset))
-
-            if newest_input_mtime <= oldest_child_mtime:
-                return
+        if self.statuses[element]:
+            return
 
         yield from self.execute(graph, element, **options)
 
     @dispatch.subtasklet
     def execute(self, graph, element, **options):
+        del self.statuses[element]
         for child in graph.children_of(self):
             child.delete_files(element)
             child.create_dirs(element)
