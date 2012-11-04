@@ -402,7 +402,7 @@ def parse_data_values(action, token):
     # "data_values" QualifiedIdentifier {"[" QualifiedIdentifier* "]"}?
     # {":" Identifier?}? EndOfHeading IndentedText
     raise NotImplementedError("data_values parser not implemented yet")
-    if 0: yield
+    yield
 
 
 #

@@ -248,7 +248,7 @@ class Space:
 class Element:
     def __init__(self, space=Space(), coordinates=dict()):
         self.space = space
-        self.coordinates = {}
+        self.coordinates = {} # dim -> value
         for extent in self.space.extents:
             dim = extent.dimension
             if dim in coordinates:
@@ -256,6 +256,9 @@ class Element:
                 continue
             assert False, ("attempt to construct incomplete Element for {}: "
                            "coordinates: {}".format(space, coordinates))
+
+    def __len__(self):
+        return self.space.ndims
 
     def __getitem__(self, dimension):
         return self.coordinates[dimension]
@@ -284,6 +287,12 @@ class Element:
         dict_.update(extra_names)
         rendition = template.render(dict_)
         return rendition
+
+    def appended(self, extent, value):
+        space = Space(self.space.extents + [extent])
+        coords = self.coordinates.copy()
+        coords[extent.dimension] = value
+        return Element(space, coords)
 
 
 #
@@ -499,8 +508,6 @@ class Vertex:
         self.update_started = False # Prevent duplicate update.
         self.notification_request_chan = None # Request chan for mux.
 
-        self.mtimes = ElementMTimeCache(self.scope, self.read_mtimes)
-
     def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
 
@@ -513,18 +520,10 @@ class Vertex:
         if isinstance(self, Survey):
             return Survey
 
-    def newest_mtime(self, element=Element()):
-        element = self.scope.canonicalized_element(element)
-        _, newest = self.mtimes[element]
-        return newest
-
-    def oldest_mtime(self, element=Element()):
-        element = self.scope.canonicalized_element(element)
-        oldest, _ = self.mtimes[element]
-        return oldest
-
     @dispatch.tasklet
     def update_all_elements(self, graph, **options):
+        # This method implements element-by-element update. Subclasses can
+        # override this method to do a full-scope check before calling super().
         dprint_update(self, "updating all elements")
         completion_chans = []
         for element, is_full in self.scope.iterate():
@@ -624,6 +623,8 @@ class Dataset(Vertex):
         super().__init__(graph, name, scope)
         self.filename_template = filename_template
 
+        self.mtimes = SpatialCache(self.scope, self.read_mtimes, mtime_extrema)
+
     def read_mtimes(self, element):
         filename = element.render_template(self.filename_template)
         try:
@@ -635,16 +636,22 @@ class Dataset(Vertex):
         return mtime, mtime # oldest, newest
 
     @dispatch.tasklet
+    def update_all_elements(self, graph, **options):
+        oldest_mtime, newest_mtime = self.mtimes[Element()]
+        if oldest_mtime > 0:
+            dprint_update(self, "all elements up to date")
+            return
+
+        yield from super().update_all_elements(graph, **options)
+
+    @dispatch.tasklet
     def update_element(self, graph, element, is_full, **options):
-        if 0: yield
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
                       element)
 
         oldest_mtime, newest_mtime = self.mtimes[element]
-        # Since the dataset will not further change, we can cache the mtimes.
-        self.mtimes[element] = (oldest_mtime, newest_mtime)
 
         if ... in (oldest_mtime, newest_mtime): # Partial element.
             assert not is_full
@@ -652,7 +659,7 @@ class Dataset(Vertex):
         assert is_full
 
         if oldest_mtime == 0 or newest_mtime == MAX_TIME:
-            # There were missing files.
+            # There are missing files.
             # Unless this is a dry run or a keep-going run, we raise an error.
             # XXX For now, we raise an error unconditionally.
             filename = element.render_template(self.filename_template)
@@ -673,6 +680,16 @@ class Dataset(Vertex):
             # In the future, there should be a way to associate with this
             # exception the command that should have produced the file (if
             # not a source dataset).
+        return
+        yield
+
+    def delete_files(self, element):
+        for full_element, is_full in self.scope.iterate(element):
+            assert is_full
+            filename = full_element.render_template(self.filename_template)
+            if os.path.exists(filename):
+                os.unlink(filename)
+        del self.mtimes[element]
 
     def dirname(self, element):
         element = self.scope.canonicalized_element(element)
@@ -702,6 +719,11 @@ class Dataset(Vertex):
                     return None
             return dirname
 
+    def create_dirs(self, element):
+        dirname = self.dirname(element)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+
     def name_proxy(self, element):
         return DatasetNameProxy(self, element)
 
@@ -713,8 +735,23 @@ class Computation(Vertex):
         self.occupancy = occupancy
 
     @dispatch.tasklet
+    def update_all_elements(self, graph, **options):
+        oldest_child_mtime, _ = mtime_extrema(child.mtimes[Element()]
+                                              for child
+                                              in graph.children_of(self))
+        if oldest_child_mtime > 0:
+            _, newest_input_mtime = mtime_extrema(parent.mtimes[Element()]
+                                                  for parent
+                                                  in graph.parents_of(self)
+                                                  if isinstance(parent,
+                                                                Dataset))
+            if newest_input_mtime <= oldest_child_mtime:
+                return
+
+        yield from super().update_all_elements(graph, **options)
+
+    @dispatch.tasklet
     def update_element(self, graph, element, is_full, **options):
-        if 0: yield
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -722,85 +759,32 @@ class Computation(Vertex):
 
         if not is_full:
             # XXX Print if requested.
-            self.mtimes[element] = (..., ...)
             return
 
-        parents = graph.parents_of(self)
-        newest_input_mtime = 0
-        for parent in parents:
-            parent_newest_mtime = parent.newest_mtime(element)
-            newest_input_mtime = max(newest_input_mtime, parent_newest_mtime)
+        oldest_child_mtime, _ = mtime_extrema(child.mtimes[element]
+                                              for child
+                                              in graph.children_of(self))
+        if oldest_child_mtime > 0:
+            _, newest_input_mtime = mtime_extrema(parent.mtimes[element]
+                                                  for parent
+                                                  in graph.parents_of(self)
+                                                  if isinstance(parent,
+                                                                Dataset))
 
-        previous_starttime, previous_finishtime = self.read_mtimes(element)
-
-        if previous_finishtime < newest_input_mtime:
-            # In this case we know we are out of date and need not check the
-            # dataset files.
-            pass
-        else:
-            children = graph.children_of(self)
-            oldest_output_mtime = MAX_TIME
-            for child in children:
-                oldest_output_mtime = min(oldest_output_mtime,
-                                          child.oldest_mtime(element))
-            
-            if newest_input_mtime <= oldest_output_mtime:
-                # We are up to date.
-                self.mtimes[element] = (previous_starttime,
-                                        previous_finishtime)
+            if newest_input_mtime <= oldest_child_mtime:
                 return
 
-        # We are not up to date, so run the computation.
-        self.create_dirs_for_output(graph, element)
-        self.touch_starttime_stamp(element)
-        yield from self.run_command(graph, element, **options)
-        self.touch_finishtime_stamp(element)
+        yield from self.execute(graph, element, **options)
 
-    def read_mtimes(self, element):
-        startstamp = os.path.join(self.cache_dir(element), "start")
-        try:
-            start = os.path.getmtime(startstamp)
-            dprint_mtime(start, startstamp)
-        except FileNotFoundError:
-            dprint_mtime("missing", startstamp)
-            start = 0
-
-        finishstamp = os.path.join(self.cache_dir(element), "finish")
-        try:
-            finish = os.path.getmtime(finishstamp)
-            dprint_mtime(finish, finishstamp)
-        except FileNotFoundError:
-            dprint_mtime("missing", finishstamp)
-            finish = MAX_TIME
-
-        return start, finish
-
-    def create_dirs_for_output(self, graph, element, **options):
+    @dispatch.subtasklet
+    def execute(self, graph, element, **options):
         for child in graph.children_of(self):
-            dirnames = set()
-            dirname = child.dirname(element)
-            if dirname:
-                os.makedirs(dirname, exist_ok=True)
-
-    def cache_dir(self, element):
-        return os.path.join(files.ndmake_dir(), "compute", self.name,
-                            files.element_dirs(element))
-
-    def touch_starttime_stamp(self, element):
-        stamp = os.path.join(self.cache_dir(element), "start")
-        mtime = files.touch(stamp)
-        self.mtimes[element] = (mtime, MAX_TIME)
-
-    def touch_finishtime_stamp(self, element):
-        stamp = os.path.join(self.cache_dir(element), "finish")
-        mtime = files.touch(stamp)
-        starttime, _ = self.mtimes[element]
-        self.mtimes[element] = (starttime, mtime)
+            child.delete_files(element)
+            child.create_dirs(element)
+        yield from self.run_command(graph, element, **options)
 
     @dispatch.subtasklet
     def run_command(self, graph, element, **options):
-        if 0: yield
-
         # Bind input and output dataset names.
         io_vertices = (graph.parents_of(self) + graph.children_of(self))
         dataset_name_proxies = dict((v.name, v.name_proxy(element))
@@ -822,24 +806,35 @@ class Computation(Vertex):
                 proc.wait()
                 return proc.returncode
 
-        if "threadpool" in options:
-            completion_chan = yield dispatch.MakeChannel()
-            yield dispatch.Send(options["threadpool"],
-                                (task_func, None, completion_chan,
-                                 self.occupancy))
-            # Wait for task_func() to finish.
-            _, retval, exc_info = yield dispatch.Recv(completion_chan)
-            if exc_info:
-                raise exc_info
-        else:
-            # Run serially.
-            retval = task_func()
+        outputs_are_valid = False
+        try:
+            if "threadpool" in options:
+                completion_chan = yield dispatch.MakeChannel()
+                yield dispatch.Send(options["threadpool"],
+                                    (task_func, None, completion_chan,
+                                     self.occupancy))
+                # Wait for task_func() to finish.
+                _, retval, exc_info = yield dispatch.Recv(completion_chan)
+                if exc_info:
+                    raise exc_info
+            else:
+                # Run serially.
+                retval = task_func()
 
-        if retval:
-            # TODO Remove output files (by calling dsets and match surveys)
-            # For now, we raise unconditionally.
-            raise CalledProcessError("command returned exit status of "
-                                     "{:d}: {}".format(retval, command))
+            if retval:
+                # For now, we raise unconditionally. XXX If requested, outputs
+                # should be considered valid even if retval != 0.
+                raise CalledProcessError("command returned exit status of "
+                                         "{:d}: {}".format(retval, command))
+            else:
+                outputs_are_valid = True
+
+        finally:
+            # If the command failed, we need to delete any output files, which
+            # may be corrupt.
+            if not outputs_are_valid:
+                for child in graph.children_of(self):
+                    child.delete_files(element)
 
 
 class Survey(Vertex):
@@ -848,6 +843,9 @@ class Survey(Vertex):
         self.surveyer = surveyer
 
         self.results = {}
+
+        self.mtimes = SpatialCache(self.scope,
+                                   self.surveyer.read_mtimes, mtime_extrema)
 
     def is_result_available(self, element):
         # Iff we've been updated, the results are stored in self.results.
@@ -858,12 +856,8 @@ class Survey(Vertex):
         element = self.scope.canonicalized_element(element)
         return self.results[element]
 
-    def read_mtimes(self, element):
-        return self.surveyer.read_mtimes(element)
-
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, **options):
-        if 0: yield
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -873,23 +867,53 @@ class Survey(Vertex):
             self.results[element] = ... # Not really necessary.
             return
 
-        parents = graph.parents_of(self)
-        newest_input_mtime = 0
-        for parent in parents:
-            assert isinstance(parent, Dataset)
-            newest_input_mtime = max(newest_input_mtime,
-                                     parent.newest_mtime(element))
-
-        previous_oldest, previous_newest = self.surveyer.read_mtimes(element)
-        if newest_input_mtime <= previous_oldest:
-            # We are up to date; load previous results.
-            self.results[element] = self.surveyer.read_result(element)
-            self.mtimes[element] = (previous_oldest, previous_newest)
+        for parent in graph.parents_of(self):
+            if isinstance(parent, Dataset):
+                # Command survey with input(s).
+                break
+            if isinstance(parent, Computation):
+                # Filename survey with producer.
+                break
+        else:
+            # We have a command survey with no inputs or a filename survey on a
+            # non-computed dataset: always run survey.
+            yield from self.execute(graph, element, **options)
             return
 
-        # We are not up to date, so do the survey.
-        self.results[element] = self.surveyer.survey(graph, self, element)
-        self.mtimes[element] = self.surveyer.read_mtimes(element)
+        our_mtime, _ = self.mtimes[element]
+        if our_mtime > 0:
+            if self.surveyer.mtimes_include_files:
+                self.load_result(element)
+                return
+
+            _, newest_input_mtime = mtime_extrema(parent.mtimes[element]
+                                                  for parent
+                                                  in graph.parents_of(self)
+                                                  if isinstance(parent,
+                                                                Dataset))
+            if newest_input_mtime <= our_mtime:
+                self.load_result(element)
+                return
+
+        yield from self.execute(graph, element, **options)
+
+    @dispatch.subtasklet
+    def execute(self, graph, element, **options):
+        self.surveyer.delete_files(element, delete_surveyed_files=False)
+        del self.mtimes[element]
+        self.results[element] = self.surveyer.run_survey(graph, self, element)
+        return
+        yield
+
+    def load_result(self, element):
+        self.results[element] = self.surveyer.load_result(element)
+
+    def delete_files(self, graph, element):
+        self.surveyer.delete_files(element, delete_surveyed_files=True)
+        del self.mtimes[element]
+
+    def create_dirs(self, element):
+        self.surveyer.create_dirs(element)
 
 
 #
@@ -897,6 +921,8 @@ class Survey(Vertex):
 #
 
 class Surveyer:
+    mtimes_include_files = False
+
     def __init__(self, name, scope):
         self.name = name
         self.scope = scope
@@ -911,10 +937,20 @@ class Surveyer:
             return 0, MAX_TIME
         return mtime, mtime # oldest, newest
 
-    def read_result(self, element):
+    def load_result(self, element):
         with open(self.cache_file(element)) as file:
             result_text = file.read()
         return result_text
+
+    def delete_files(self, element, delete_surveyed_files=False):
+        assert not delete_surveyed_files
+        filename = self.cache_file(element)
+        if os.path.exists(filename):
+            os.unlink(filename)
+
+    def create_dirs(self, element):
+        pass # No-op.
+
 
 class CommandSurveyer(Surveyer):
     def __init__(self, name, scope, command_template):
@@ -923,17 +959,17 @@ class CommandSurveyer(Surveyer):
 
     def cache_file(self, element):
         return os.path.join(files.ndmake_dir(), "survey", self.name,
-                            files.element_dirs(element), "command_output")
+                            files.element_dirs(element), "output")
 
-    def read_result(self, element):
-        result_text = super().read_result(element)
-        return self.convert_result(result_text)
+    def load_result(self, element):
+        result_text = super().load_result(element)
+        result = self.convert_result(result_text)
+        return result
 
-    def survey(self, graph, survey, element):
+    def run_survey(self, graph, survey, element):
         # Bind input dataset names.
-        parents = graph.parents_of(survey)
         dataset_name_proxies = dict((parent.name, parent.name_proxy(element))
-                                    for parent in parents
+                                    for parent in graph.parents_of(survey)
                                     if isinstance(parent, Dataset))
 
         command = element.render_template(self.command_template,
@@ -953,13 +989,12 @@ class CommandSurveyer(Surveyer):
                                          "{:d}: {}".format(proc.returncode,
                                                            command))
 
-        result = self.convert_result(result_text)
-
         cache_file = self.cache_file(element)
         os.makedirs(os.path.dirname(cache_file), exist_ok=True)
         with open(cache_file, "w") as file:
             file.write(result_text)
 
+        result = self.convert_result(result_text)
         return result
 
 
@@ -976,6 +1011,8 @@ class IntegerTripletCommandSurveyer(CommandSurveyer):
 
 class ValuesCommandSurveyer(CommandSurveyer):
     def __init__(self, name, scope, command_template, transform_template=None):
+        if transform_template is not None:
+            raise NotImplementedError("transform template not implemented")
         super().__init__(name, scope)
 
     def convert_result(self, result_text):
@@ -983,35 +1020,68 @@ class ValuesCommandSurveyer(CommandSurveyer):
 
 
 class FilenameSurveyer(Surveyer):
+    mtimes_include_files = True
+
     def __init__(self, name, scope, pattern_template, transform_template=None):
+        if transform_template is not None:
+            raise NotImplementedError("transform template not implemented")
         super().__init__(name, scope)
+        self.pattern_template = pattern_template
 
     def cache_file(self, element):
         return os.path.join(files.ndmake_dir(), "survey", self.name,
-                            files.element_dirs(element), "matched_files")
+                            files.element_dirs(element), "roster")
 
     def read_mtimes(self, element):
         roster_old, roster_new = super().read_mtimes(element)
         if roster_old == 0 or roster_new == MAX_TIME:
             return 0, MAX_TIME
 
-        # TODO Check files and get oldest and newest mtime.
-        return min(roster_old, oldest_mtime), max(roster_new, newest_mtime)
+        roster_text = super().load_result(element)
+        oldest_mtime, newest_mtime = roster_old, roster_new
+        for filename, recorded_mtime in (shlex.split(line)[:2]
+                                         for line in roster_text.splitlines()):
+            try:
+                mtime = os.path.getmtime(filename)
+                dprint_mtime(mtime, filename)
+            except FileNotFoundError:
+                dprint_mtime("missing", filename)
+                return 0, MAX_TIME
+            if mtime != recorded_mtime:
+                return 0, MAX_TIME
+            oldest_mtime = min(oldest_mtime, mtime)
+            newest_mtime = max(newest_mtime, mtime)
+        return oldest_mtime, newest_mtime
 
-    def read_result(self, element):
-        file_list = super().read_result(element)
-        files = file_list.splitlines()
+    def load_result(self, element):
+        roster_text = super().load_result(element)
         # TODO Do pattern matching and transformation on each filename and
-        # return list of results.
+        # return list of results. Or load saved transformed results.
+        raise NotImplementedError()
 
-    def survey(self, graph, survey, element):
+    def run_survey(self, graph, survey, element):
         # TODO Do pattern matching in a smart way (dir-by-dir)
-        # save file list
+        # save file list (with transformed result?)
         # return list of transformed results.
-        pass
+        raise NotImplementedError()
 
-    def dirname(self, element):
-        return None # TODO Do something about this.
+    def delete_files(self, element, delete_surveyed_files):
+        if delete_surveyed_files:
+            try:
+                roster_text = super().load_result(element)
+            except FileNotFoundError:
+                pass
+            else:
+                for filename in (shlex.split(line)[0]
+                                 for line in roster_text.splitlines()):
+                    if os.path.exists(filename):
+                        os.unlink(filename)
+        super().delete_files(element)
+
+    def create_dirs(self, element):
+        # TODO We need the associated dataset for this...
+        # Then, just run dataset.create_dirs(element)
+        raise NotImplementedError()
 
 
 #
@@ -1219,30 +1289,107 @@ class IndexedSubextent(Subextent):
 # Caching mtimes
 #
 
-class ElementMTimeCache(dict):
-    # A map from Element to (oldest_mtime, newest_mtime), with the ability to
-    # aggregate mtimes from full elements to construct the mtimes for a partial
-    # element (i.e. a subspace of the scope).
-    def __init__(self, scope, mtimes_getter):
-        self.scope = scope
-        self.get_full_element_mtimes = mtimes_getter
+def mtime_extrema(iter):
+    # For use as combiner for SpatialCache.
+    oldest, newest = MAX_TIME, 0
+    for old, new in iter:
+        if old == 0 or new == MAX_TIME:
+            assert (old, new) == (0, MAX_TIME)
+            return 0, MAX_TIME
+        oldest = min(oldest, old)
+        newest = max(newest, new)
+    if (oldest, newest) == (MAX_TIME, 0):
+        # iter did not yield anything.
+        return 0, MAX_TIME
+    return oldest, newest
 
-    def __missing__(self, element):
-        # Caller is responsible for ensuring that element is canonical.
-        oldest, newest = MAX_TIME, 0
-        for full_element, is_full in self.scope.iterate(element):
-            if not is_full:
-                return (..., ...) # No need to check further.
-            if full_element in self:
-                old, new = self[full_element]
-            else:
-                old, new = self.get_full_element_mtimes(full_element)
-            if old == 0 or new == MAX_TIME:
-                assert (old, new) == (0, MAX_TIME)
-                return 0, MAX_TIME # No need to check further.
-            oldest = min(oldest, old)
-            newest = max(newest, new)
-        return oldest, newest
+
+class SpatialCache:
+    # A data structure storing values associated with every possible partial or
+    # full element of a space.
+    # XXX TODO Deal with undemarcated extents. Or no need?
+    def __init__(self, space, loader, combiner, _level=0):
+        # loader   - callable providing the uncached value for a full element
+        # combiner - callable taking iterator as argument and returning the
+        #            aggregate value
+        self.space = space
+        self.level = _level # Index of extent within self.space.
+        if self.level < self.space.ndims:
+            self.extent = self.space.extents[self.level]
+        self.load = loader
+        self.combine = combiner
+        self.cached = None # The cached value.
+        self.map = {} # 1st-D key -> SpatialCache for next level
+
+    def __getitem__(self, element):
+        element = self.space.canonicalized_element(element)
+        return self._get(element, 0, Element())
+
+    def __delitem__(self, element):
+        element = self.space.canonicalized_element(element)
+        self._invalidate(element, 0)
+
+    def _subtree(self, key):
+        if key not in self.map:
+            self.map[key] = SpatialCache(self.space, self.load, self.combine,
+                                         _level=self.level + 1)
+        return self.map[key]
+
+    def _get(self, key_element, dim_index, full_element):
+        # full_element always ends one dimension above.
+
+        if not (len(key_element) - dim_index):
+            # Reached end of key_element.
+            return self._compute(full_element)
+
+        if self.extent.dimension in key_element.space.dimensions:
+            # Key element assigns our dimension.
+            key = key_element[self.extent.dimension]
+            return self._subtree(key)._get(key_element, dim_index + 1,
+                                           full_element.
+                                           appended(self.extent, key))
+
+        # Key element skips our dimension.
+        return self.combine(self._subtree(key).
+                            _get(key_element, dim_index,
+                                 full_element.appended(self.extent, key))
+                            for key in self.extent.iterate(key_element))
+
+    def _compute(self, full_element):
+        if self.cached is not None:
+            pass # Use cached.
+
+        elif not (self.space.ndims - self.level):
+            # We are a leaf.
+            self.cached = self.load(full_element)
+
+        else:
+            # We are not a leaf.
+            self.cached = self.combine(self._subtree(key).
+                                       _compute(full_element.
+                                                appended(self.extent, key))
+                                       for key
+                                       in self.extent.iterate(full_element))
+
+        return self.cached
+
+    def _invalidate(self, key_element, dim_index):
+        self.cached = None
+
+        if not (len(key_element) - dim_index):
+            # Reached end of key_element.
+            self.map.clear()
+            return
+
+        if self.extent.dimension in key_element.space.dimensions:
+            # Key element assigns our dimension.
+            key = key_element[self.extent.dimension]
+            self._subtree(key)._invalidate(key_element, dim_index + 1)
+            return
+
+        # Key element skips our dimension.
+        for key in self.extent.iterate(key_element):
+            self._subtree(key)._invalidate(key_element, dim_index)
 
 
 #
