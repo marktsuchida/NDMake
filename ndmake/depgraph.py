@@ -614,6 +614,13 @@ class Vertex:
         yield dispatch.Recv(completion_chan)
         print("finished check/update of {}".format(self))
 
+    def invalidate_up_to_date_cache(self, graph, element):
+        # Propagate computation status invalidation to descendants.
+        # This generic implementation just propagates the call; Computation
+        # overrides this to implement the actual invalidation.
+        for child in graph.children_of(self):
+            child.invalidate_up_to_date_cache(graph, element)
+
 
 #
 # Concrete Vertices
@@ -798,6 +805,7 @@ class Computation(Vertex):
     @dispatch.subtasklet
     def execute(self, graph, element, options):
         del self.statuses[element]
+        self.invalidate_up_to_date_cache(graph, element)
         for child in graph.children_of(self):
             child.delete_files(element)
             child.create_dirs(element)
@@ -855,6 +863,10 @@ class Computation(Vertex):
             if not outputs_are_valid:
                 for child in graph.children_of(self):
                     child.delete_files(element)
+
+    def invalidate_up_to_date_cache(self, graph, element):
+        del self.statuses[element]
+        super().invalidate_up_to_date_cache(graph, element)
 
 
 class Survey(Vertex):
@@ -932,6 +944,7 @@ class Survey(Vertex):
     def execute(self, graph, element, options):
         self.surveyer.delete_files(element, delete_surveyed_files=False)
         del self.mtimes[element]
+        self.invalidate_up_to_date_cache(graph, element)
         self.results[element] = self.surveyer.run_survey(graph, self, element)
         return
         yield
