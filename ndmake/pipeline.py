@@ -3,9 +3,10 @@ import functools
 import re
 import sys
 
-from ndmake import depgraph
-from ndmake import template
 from ndmake import debug
+from ndmake import depgraph
+from ndmake import space
+from ndmake import template
 
 dprint = debug.dprint_factory(__name__)
 
@@ -311,7 +312,7 @@ class Pipeline:
         if kind == "dimension":
             extents = list(self._get_extent_from_graph(graph, dim_or_dom)
                            for dim_or_dom in entries.get("given", ()))
-            scope = depgraph.Space(extents)
+            scope = space.Space(extents)
         else:
             assert kind == "subdomain"
             dimension = graph.dimensions[name.split(".", 1)[0]]
@@ -319,67 +320,63 @@ class Pipeline:
             superextent = dimension.extent_by_name(superextent_name)
             scope = superextent.scope
 
+        template = None
         survey = None
 
         if "values" in entries:
-            classes = (depgraph.EnumeratedFullExtent,
-                       depgraph.EnumeratedSubextent)
-            tmpl = new_template("__values_{}".format(name), entries["values"])
-            source = tmpl
+            classes = (space.EnumeratedFullExtent,
+                       space.EnumeratedSubextent)
+            template = new_template("__values_{}".format(name),
+                                    entries["values"])
 
         elif "range" in entries:
-            classes = (depgraph.ArithmeticFullExtent,
-                       depgraph.ArithmeticSubextent)
-            tmpl = new_template("__range_{}".format(name), entries["range"])
-            source = tmpl
+            classes = (space.ArithmeticFullExtent,
+                       space.ArithmeticSubextent)
+            template = new_template("__range_{}".format(name),
+                                    entries["range"])
 
         elif "slice" in entries:
             assert kind == "subdomain"
-            classes = (None, depgraph.IndexedSubextent)
-            tmpl = new_template("__slice_{}".format(name), entries["slice"])
-            source = tmpl
+            classes = (None, space.IndexedSubextent)
+            template = new_template("__slice_{}".format(name),
+                                    entries["slice"])
 
         elif "command" in entries:
-            classes = (depgraph.EnumeratedFullExtent,
-                       depgraph.EnumeratedSubextent)
+            classes = (space.EnumeratedFullExtent,
+                       space.EnumeratedSubextent)
             tmpl = new_template("__vcmd_{}".format(name), entries["command"])
             if "transform" in entries:
                 tfm_tmpl = new_template("__tform_{}".format(name),
                                         entries["transform"])
             else:
                 tfm_tmpl = None
-            surveyer = depgraph.ValuesCommandSurveyer(name, scope,
-                                                      tmpl, tfm_tmpl)
+            surveyer = space.ValuesCommandSurveyer(name, scope,
+                                                   tmpl, tfm_tmpl)
             survey = depgraph.Survey(graph, name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
-            source = survey
 
         elif "range_command" in entries:
-            classes = (depgraph.ArithmeticFullExtent,
-                       depgraph.ArithmeticSubextent)
+            classes = (space.ArithmeticFullExtent,
+                       space.ArithmeticSubextent)
             tmpl = new_template("__rcmd_{}".format(name),
                                 entries["range_command"])
-            surveyer = depgraph.IntegerTripletCommandSurveyer(name, scope,
-                                                              tmpl)
+            surveyer = space.IntegerTripletCommandSurveyer(name, scope, tmpl)
             survey = depgraph.Survey(graph, name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
-            source = survey
 
         elif "slice_command" in entries:
             assert kind == "subdomain"
-            classes = (None, depgraph.IndexedSubextent)
+            classes = (None, space.IndexedSubextent)
             tmpl = new_template("__scmd_{}".format(name),
                                 entries["slice_command"])
-            surveyer = depgraph.IntegerTripletCommandSurveyer(name, scope,
-                                                              tmpl)
+            surveyer = space.IntegerTripletCommandSurveyer(name, scope, tmpl)
             survey = depgraph.Survey(graph, name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
-            source = survey
 
         else:
             assert "match" in entries
-            classes = (depgraph.EnumeratedFullExtent,
-                       depgraph.EnumeratedSubextent)
+            classes = (space.EnumeratedFullExtent,
+                       space.EnumeratedSubextent)
             match_tmpl = new_template("__match_{}".format(name),
                                       entries["match"])
             if "transform" in entries:
@@ -387,31 +384,32 @@ class Pipeline:
                                         entries["transform"])
             else:
                 tfm_tmpl = None
-            surveyer = depgraph.FilenameSurveyer(name, scope,
-                                                 match_tmpl, tfm_tmpl)
+            surveyer = space.FilenameSurveyer(name, scope,
+                                              match_tmpl, tfm_tmpl)
             survey = depgraph.Survey(graph, name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
-            source = survey
             
-        if isinstance(source, depgraph.Survey):
-            if isinstance(surveyer, depgraph.CommandSurveyer):
+        if survey is not None:
+            if isinstance(surveyer, space.CommandSurveyer):
                 for input in entries.get("inputs", ()):
                     dataset = graph.vertex_by_name(input, depgraph.Dataset)
                     self._add_edge_to_graph(graph, dataset, survey)
 
-            if isinstance(surveyer, depgraph.FilenameSurveyer):
+            if isinstance(surveyer, space.FilenameSurveyer):
                 if "producer" in entries:
                     compute = graph.vertex_by_name(entries["producer"],
                                                    depgraph.Computation)
                     self._add_edge_to_graph(graph, compute, survey)
 
         if kind == "dimension":
-            dimension = depgraph.Dimension(name)
-            extent = classes[0](dimension, scope, source)
+            dimension = space.Dimension(name)
+            extent = classes[0](dimension, scope,
+                                template=template, survey=survey)
             dimension.full_extent = extent
             graph.dimensions[name] = dimension # TODO Use a Graph method.
         else:
-            extent = classes[1](superextent, extent_name, source)
+            extent = classes[1](superextent, extent_name,
+                                template=template, survey=survey)
             # TODO Use an Extent method.
             superextent.subextents[extent_name] = extent
 
@@ -426,7 +424,7 @@ class Pipeline:
 
         extents = list(self._get_extent_from_graph(graph, dim_or_dom)
                        for dim_or_dom in entries.get("scope", ()))
-        scope = depgraph.Space(extents)
+        scope = space.Space(extents)
 
         tmpl = graph.templateset.new_template("__dataset_{}".format(name),
                                               entries["filename"])
@@ -444,7 +442,7 @@ class Pipeline:
 
         extents = list(self._get_extent_from_graph(graph, dim_or_dom)
                        for dim_or_dom in entries.get("scope", ()))
-        scope = depgraph.Space(extents)
+        scope = space.Space(extents)
 
         tmpl = graph.templateset.new_template("__compute_{}".format(name),
                                               entries["command"])
