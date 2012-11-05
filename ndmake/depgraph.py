@@ -462,9 +462,9 @@ class Graph:
                     if not len(self._children.setdefault(id, set())))
 
     @dispatch.tasklet
-    def update_vertices(self, vertices, **options):
+    def update_vertices(self, vertices, options):
         for vertex in vertices:
-            yield dispatch.Spawn(vertex.update(self, **options))
+            yield dispatch.Spawn(vertex.update(self, options))
 
         # Wait for completion.
         notification_chans = [] # Can't use generator expression here.
@@ -478,19 +478,19 @@ class Graph:
             yield dispatch.Recv(completion_chan)
 
     @dispatch.tasklet
-    def update_vertices_with_threadpool(self, vertices, **options):
-        new_options = options.copy()
+    def update_vertices_with_threadpool(self, vertices, options):
         if options.get("parallel", False):
             jobs = options.get("jobs")
             if not jobs or jobs < 1:
                 jobs = multiprocessing.cpu_count()
+                options["jobs"] = jobs
             task_chan = yield dispatch.MakeChannel()
             yield dispatch.Spawn(threadpool.threadpool(task_chan, jobs))
-            new_options["threadpool"] = task_chan
+            options["threadpool"] = task_chan
 
-        yield from self.update_vertices(vertices, **new_options)
+        yield from self.update_vertices(vertices, options)
 
-        if "threadpool" in new_options:
+        if "threadpool" in options:
             finish_chan = yield dispatch.MakeChannel()
             yield dispatch.Send(task_chan, (..., None, finish_chan, None),
                                 block=False)
@@ -522,7 +522,7 @@ class Vertex:
             return Survey
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, **options):
+    def update_all_elements(self, graph, options):
         # This method implements element-by-element update. Subclasses can
         # override this method to do a full-scope check before calling super().
         dprint_update(self, "updating all elements")
@@ -531,7 +531,7 @@ class Vertex:
             completion_chan = yield dispatch.MakeChannel()
             completion_chans.append(completion_chan)
             yield dispatch.Spawn(self.update_element(graph, element, is_full,
-                                                     **options),
+                                                     options),
                                  return_chan=completion_chan)
 
             # With the current implementation of dispatch.py, having a large
@@ -579,7 +579,7 @@ class Vertex:
         return notification_chan
 
     @dispatch.tasklet
-    def update(self, graph, **options):
+    def update(self, graph, options):
         # Prevent duplicate execution.
         if self.update_started:
             return
@@ -592,24 +592,24 @@ class Vertex:
         # Set up notification for our completion.
         completion_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(mux.multiplex(completion_chan, request_chan))
-        yield dispatch.Spawn(self._update(graph, **options),
+        yield dispatch.Spawn(self._update(graph, options),
                              return_chan=completion_chan)
 
     @dispatch.tasklet
-    def _update(self, graph, **options):
+    def _update(self, graph, options):
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing upward:", self)
 
         # Update prerequisites.
         parents = graph.parents_of(self)
-        yield from graph.update_vertices(parents, **options)
+        yield from graph.update_vertices(parents, options)
 
         # Perform the update action.
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing downward:", self)
         print("starting check/update of {}".format(self))
         completion_chan = yield dispatch.MakeChannel()
-        yield dispatch.Spawn(self.update_all_elements(graph, **options),
+        yield dispatch.Spawn(self.update_all_elements(graph, options),
                              return_chan=completion_chan)
         yield dispatch.Recv(completion_chan)
         print("finished check/update of {}".format(self))
@@ -641,18 +641,18 @@ class Dataset(Vertex):
         return mtime, mtime # oldest, newest
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, **options):
+    def update_all_elements(self, graph, options):
         oldest_mtime, newest_mtime = self.mtimes[Element()]
         if oldest_mtime > 0:
             dprint_update(self, "all elements up to date")
             self.mtimes.save_to_file()
             return
 
-        yield from super().update_all_elements(graph, **options)
+        yield from super().update_all_elements(graph, options)
         self.mtimes.save_to_file()
 
     @dispatch.tasklet
-    def update_element(self, graph, element, is_full, **options):
+    def update_element(self, graph, element, is_full, options):
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -765,18 +765,18 @@ class Computation(Vertex):
         return False
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, **options):
+    def update_all_elements(self, graph, options):
         status = self.statuses[Element()]
         if status:
             dprint_update(self, "all elements up to date")
             self.statuses.save_to_file()
             return
 
-        yield from super().update_all_elements(graph, **options)
+        yield from super().update_all_elements(graph, options)
         self.statuses.save_to_file()
 
     @dispatch.tasklet
-    def update_element(self, graph, element, is_full, **options):
+    def update_element(self, graph, element, is_full, options):
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -789,18 +789,18 @@ class Computation(Vertex):
         if self.statuses[element]:
             return
 
-        yield from self.execute(graph, element, **options)
+        yield from self.execute(graph, element, options)
 
     @dispatch.subtasklet
-    def execute(self, graph, element, **options):
+    def execute(self, graph, element, options):
         del self.statuses[element]
         for child in graph.children_of(self):
             child.delete_files(element)
             child.create_dirs(element)
-        yield from self.run_command(graph, element, **options)
+        yield from self.run_command(graph, element, options)
 
     @dispatch.subtasklet
-    def run_command(self, graph, element, **options):
+    def run_command(self, graph, element, options):
         # Bind input and output dataset names.
         io_vertices = (graph.parents_of(self) + graph.children_of(self))
         dataset_name_proxies = dict((v.name, v.name_proxy(element))
@@ -878,12 +878,12 @@ class Survey(Vertex):
         return self.results[element]
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, **options):
-        yield from super().update_all_elements(graph, **options)
+    def update_all_elements(self, graph, options):
+        yield from super().update_all_elements(graph, options)
         self.mtimes.save_to_file()
 
     @dispatch.tasklet
-    def update_element(self, graph, element, is_full, **options):
+    def update_element(self, graph, element, is_full, options):
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -903,7 +903,7 @@ class Survey(Vertex):
         else:
             # We have a command survey with no inputs or a filename survey on a
             # non-computed dataset: always run survey.
-            yield from self.execute(graph, element, **options)
+            yield from self.execute(graph, element, options)
             return
 
         our_mtime, _ = self.mtimes[element]
@@ -921,10 +921,10 @@ class Survey(Vertex):
                 self.load_result(element)
                 return
 
-        yield from self.execute(graph, element, **options)
+        yield from self.execute(graph, element, options)
 
     @dispatch.subtasklet
-    def execute(self, graph, element, **options):
+    def execute(self, graph, element, options):
         self.surveyer.delete_files(element, delete_surveyed_files=False)
         del self.mtimes[element]
         self.results[element] = self.surveyer.run_survey(graph, self, element)

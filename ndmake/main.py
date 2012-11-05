@@ -145,7 +145,7 @@ def run(argv=sys.argv):
                              "dry_run",
                              "question",
                              "verbose",
-                             "slinet",
+                             "silent",
                              "use_cache",
                              "clear_cache",
                              "clean",
@@ -178,6 +178,19 @@ def run(argv=sys.argv):
         graph.write_graphviz(args.write_graph)
         sys.exit(0)
 
+    options = {}
+    if args.jobs is not None:
+        if args.jobs < 1:
+            raise ValueError("--jobs argument must be at least 1 (got {:d})".
+                             format(args.jobs))
+        if args.jobs > 1:
+            args.parallel = True
+
+    if args.parallel:
+        options["parallel"] = True
+        if args.jobs is not None:
+            options["jobs"] = args.jobs
+
     vertices_to_update = []
     for vertex_name in args.targets:
         if ":" in vertex_name:
@@ -204,17 +217,7 @@ def run(argv=sys.argv):
     if not vertices_to_update:
         vertices_to_update = graph.sinks()
 
-    if args.parallel and not args.jobs:
-        args.jobs = multiprocessing.cpu_count()
-    if args.jobs is not None and args.jobs < 1:
-        raise ValueError("--jobs argument must be at least 1 (got {:d})".
-                         format(args.jobs))
-    if args.jobs is not None and args.jobs > 1:
-        args.parallel = True
-
-    tasklet = graph.update_vertices_with_threadpool(vertices_to_update,
-                                                    parallel=args.parallel,
-                                                    jobs=args.jobs)
+    tasklet = graph.update_vertices_with_threadpool(vertices_to_update, options)
     dispatch.start_with_tasklet(tasklet)
 
 
