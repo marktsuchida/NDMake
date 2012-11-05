@@ -645,11 +645,13 @@ class Dataset(Vertex):
         oldest_mtime, newest_mtime = self.mtimes[Element()]
         if oldest_mtime > 0:
             dprint_update(self, "all elements up to date")
-            self.mtimes.save_to_file()
+            if options.get("cache", False):
+                self.mtimes.save_to_file()
             return
 
         yield from super().update_all_elements(graph, options)
-        self.mtimes.save_to_file()
+        if options.get("cache", False):
+            self.mtimes.save_to_file()
 
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, options):
@@ -769,11 +771,13 @@ class Computation(Vertex):
         status = self.statuses[Element()]
         if status:
             dprint_update(self, "all elements up to date")
-            self.statuses.save_to_file()
+            if options.get("cache", False):
+                self.statuses.save_to_file()
             return
 
         yield from super().update_all_elements(graph, options)
-        self.statuses.save_to_file()
+        if options.get("cache", False):
+            self.statuses.save_to_file()
 
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, options):
@@ -880,7 +884,8 @@ class Survey(Vertex):
     @dispatch.tasklet
     def update_all_elements(self, graph, options):
         yield from super().update_all_elements(graph, options)
-        self.mtimes.save_to_file()
+        if options.get("cache", False):
+            self.mtimes.save_to_file()
 
     @dispatch.tasklet
     def update_element(self, graph, element, is_full, options):
@@ -1491,8 +1496,8 @@ class SpatialCache:
             except:
                 self.cached = None
                 self.map.clear()
-                # TODO Print message.
-                # self.delete_file()
+                # TODO Print warning message (malformed cache file).
+                self.delete_file()
                 return
 
         self.has_loaded_from_file = True

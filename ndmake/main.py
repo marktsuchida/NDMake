@@ -1,5 +1,4 @@
 import argparse
-import multiprocessing
 import sys
 
 from ndmake import debug
@@ -70,13 +69,11 @@ def run(argv=sys.argv):
     parser.add_argument("-s", "--silent", "--quiet", action="store_true",
                         help="[NOT IMPLEMENTED] don't print target names")
 
-    parser.add_argument("-c", "--use-cache", action="store_true",
-                        help="[NOT IMPLEMENTED] cache file modification times "
-                        "and computation up-to-date statuses (speeds up "
-                        "reruns when there are a large number of files, but "
-                        "will not detect changes unless the cache is "
-                        "explicitly cleared or ndmake is run without "
-                        "--use-cache)")
+    parser.add_argument("-c", "--cache", "--save-cache", action="store_true",
+                        help="cache file modification times and computation "
+                        "up-to-date statuses (speeds up reruns when there are "
+                        "a large number of files, but will not detect changes "
+                        "unless the cache is explicitly cleared)")
     parser.add_argument("--clear-cache", action="store_true",
                         help="[NOT IMPLEMENTED] clear the modification time "
                         "cache for the given targets (and all of their "
@@ -84,22 +81,19 @@ def run(argv=sys.argv):
 
     parser.add_argument("--clean", "--remove-files", action="store_true",
                         help="[NOT IMPLEMENTED] remove the files belonging to "
-                        "the given targets (if --use-cache is given, implies "
-                        "--clear-cache)")
+                        "the given targets")
     # XXX --clean-outdated does not use the previously cached mtimes but does
-    # delete them, regardless of whether --use-cache is given.
+    # delete them, regardless of whether or not --cache is given. (Implement by
+    # first clearing the cache for each vertex.)
     parser.add_argument("--clean-outdated", action="store_true",
-                        help="[NOT IMPLEMENTED] remove all outdated files and "
-                        "update the modification time cache accordingly")
+                        help="[NOT IMPLEMENTED] remove all outdated files")
 
-    # XXX --touch behaves differently according to --use-cache.
     parser.add_argument("-t", "--touch", action="store_true",
                         help="[NOT IMPLEMENTED] without running commands, "
                         "update only the modification time for the files "
                         "belonging to the given targets (and all of their "
                         "ancestors), so that they will be considered up to "
                         "date the next time ndmake is invoked")
-    # XXX --touch-cache implies --use-cache.
     parser.add_argument("--touch-cache", action="store_true",
                         help="[NOT IMPLEMENTED] without touching files, mark "
                         "the given targets (and all of their ancestors) "
@@ -146,7 +140,6 @@ def run(argv=sys.argv):
                              "question",
                              "verbose",
                              "silent",
-                             "use_cache",
                              "clear_cache",
                              "clean",
                              "clean_outdated",
@@ -179,6 +172,10 @@ def run(argv=sys.argv):
         sys.exit(0)
 
     options = {}
+
+    if args.cache:
+        options["cache"] = True
+
     if args.jobs is not None:
         if args.jobs < 1:
             raise ValueError("--jobs argument must be at least 1 (got {:d})".
