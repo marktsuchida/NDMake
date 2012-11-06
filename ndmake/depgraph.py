@@ -247,6 +247,9 @@ class Vertex:
     def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
 
+    def __str__(self):
+        return "{} {}".format(type(self).__name__.lower(), self.name)
+
     @property
     def namespace_type(self):
         if isinstance(self, Dataset):
@@ -373,6 +376,9 @@ class Dataset(Vertex):
         self.mtimes.set_persistence(mtime.reader, mtime.writer,
                                     path=persistence_path, filename="mtimes",
                                     level=2)
+
+    def __str__(self):
+        return "data {}".format(self.name)
 
     def read_mtimes(self, element):
         filename = element.render_template(self.filename_template)
@@ -504,6 +510,9 @@ class Computation(Vertex):
                                       lambda b: "1" if b else "0",
                                       path=persistence_path, filename="status",
                                       level=2)
+
+    def __str__(self):
+        return "compute {}".format(self.name)
 
     def is_up_to_date(self, graph, element):
         oldest_child_mtime, _ = mtime.extrema(child.mtimes[element]
@@ -643,6 +652,9 @@ class Survey(Vertex):
         self.mtimes.set_persistence(mtime.reader, mtime.writer,
                                     path=persistence_path, filename="mtimes",
                                     level=2)
+
+    def __str__(self):
+        return "survey for {}".format(self.name)
 
     def is_result_available(self, element):
         # Iff we've been updated, the results are stored in self.results.
