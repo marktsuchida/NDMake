@@ -754,22 +754,35 @@ class DatasetNameProxy:
         self.__default_element = default_element
 
     def __repr__(self):
-        return "<DatasetNameProxy default={}>".format(repr(str(self)))
+        # Use a summarized version of __quoted_filenames().
+        filenames = self.__filename_list(self.__default_element)
+        if len(filenames) > 3:
+            summary = " ".join((shlex.quote(filenames[0]),
+                                "...",
+                                shlex.quote(filenames[-1])))
+        else:
+            summary = " ".join(shlex.quote(name) for name in filenames)
 
-    def __filename_or_filenames(self, element):
+        return "<DatasetNameProxy default={}>".format(repr(summary))
+
+    def __filename_list(self, element):
         if self.__dataset.scope.is_full_element(element):
-            return element.render_template(self.__dataset.filename_template)
+            return [element.render_template(self.__dataset.filename_template)]
 
-        # We have a partial element; return a list.
+        # We have a partial element.
         filenames = []
         for full_element, is_full in self.__dataset.scope.iterate(element):
             assert is_full
             filenames.append(full_element.
                              render_template(self.__dataset.filename_template))
-        return " ".join(shlex.quote(name) for name in filenames)
+        return filenames
+
+    def __quoted_filenames(self, element):
+        return " ".join(shlex.quote(name)
+                        for name in self.__filename_list(element))
 
     def __str__(self):
-        return self.__filename_or_filenames(self.__default_element)
+        return self.__quoted_filenames(self.__default_element)
 
     def __call__(self, **kwargs):
         # Override and/or extend the default element with the kwargs.
@@ -786,5 +799,5 @@ class DatasetNameProxy:
                 coords[extent.dimension] = kwargs[extent.dimension.name]
         new_element = space.Element(space.Space(assigned_extents), coords)
 
-        return self.__filename_or_filenames(new_element)
+        return self.__quoted_filenames(new_element)
         
