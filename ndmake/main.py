@@ -5,6 +5,7 @@ from ndmake import debug
 from ndmake import depgraph
 from ndmake import dispatch
 from ndmake import parse
+from ndmake import space
 
 
 __doc__ = """Flexible automation for iterative computations."""
@@ -74,14 +75,13 @@ def run(argv=sys.argv):
                         "up-to-date statuses (speeds up reruns when there are "
                         "a large number of files, but will not detect changes "
                         "unless the cache is explicitly cleared)")
-    parser.add_argument("--clear-cache", action="store_true",
-                        help="[NOT IMPLEMENTED] clear the modification time "
-                        "cache for the given targets (and all of their "
-                        "descendants)")
 
+    parser.add_argument("--clear-cache", action="store_true",
+                        help="clear the modification time cache for the "
+                        "given targets (and all of their descendants)")
     parser.add_argument("--clean", "--remove-files", action="store_true",
-                        help="[NOT IMPLEMENTED] remove the files belonging to "
-                        "the given targets")
+                        help="remove the files belonging to the given targets")
+
     # XXX --clean-outdated does not use the previously cached mtimes but does
     # delete them, regardless of whether or not --cache is given. (Implement by
     # first clearing the cache for each vertex.)
@@ -140,8 +140,6 @@ def run(argv=sys.argv):
                              "question",
                              "verbose",
                              "silent",
-                             "clear_cache",
-                             "clean",
                              "clean_outdated",
                              "touch",
                              "touch_cache",
@@ -171,7 +169,53 @@ def run(argv=sys.argv):
         graph.write_graphviz(args.write_graph)
         sys.exit(0)
 
+    target_vertices = []
+    for vertex_name in args.targets:
+        if ":" in vertex_name:
+            type_, vertex_name = vertex_name.split(":", 1)
+            type_ = depgraph.Computation if type_ == "c" else depgraph.Dataset
+            vertex = graph.vertex_by_name(vertex_name, type_)
+            target_vertices.append(vertex)
+        else:
+            try:
+                vertex = graph.vertex_by_name(vertex_name, depgraph.Dataset)
+            except KeyError:
+                vertex = None
+            if vertex:
+                target_vertices.append(vertex)
+                continue
+            try:
+                vertex = graph.vertex_by_name(vertex_name, depgraph.Computation)
+            except KeyError:
+                raise KeyError("no dataset or computation named {}".
+                               format(vertex_name))
+            else:
+                target_vertices.append(vertex)
+
     options = {}
+
+    if args.clean or args.clear_cache: # Clean mode.
+        if not target_vertices:
+            raise NotImplementedError("--clean without targets is not "
+                                      "implemented yet (in the future, it "
+                                      "will clean all targets)")
+
+        # First, load surveyed extents by traversing the depgraph but skipping
+        # datasets and computations.
+        options["survey_only"] = True
+        options["cache"] = False
+        tasklet = graph.update_vertices(graph.sinks(), options)
+        dispatch.start_with_tasklet(tasklet)
+
+        # Now do the cleaning.
+        for vertex in target_vertices:
+            vertex.clean(graph, space.Element(), cache_only=not args.clean)
+
+        return
+
+    # Standard update mode.
+    if not target_vertices:
+        target_vertices = graph.sinks()
 
     if args.cache:
         options["cache"] = True
@@ -188,33 +232,7 @@ def run(argv=sys.argv):
         if args.jobs is not None:
             options["jobs"] = args.jobs
 
-    vertices_to_update = []
-    for vertex_name in args.targets:
-        if ":" in vertex_name:
-            type_, vertex_name = vertex_name.split(":", 1)
-            type_ = depgraph.Computation if type_ == "c" else depgraph.Dataset
-            vertex = graph.vertex_by_name(vertex_name, type_)
-            vertices_to_update.append(vertex)
-        else:
-            try:
-                vertex = graph.vertex_by_name(vertex_name, depgraph.Dataset)
-            except KeyError:
-                vertex = None
-            if vertex:
-                vertices_to_update.append(vertex)
-                continue
-            try:
-                vertex = graph.vertex_by_name(vertex_name, depgraph.Computation)
-            except KeyError:
-                raise KeyError("no dataset or computation named {}".
-                               format(vertex_name))
-            else:
-                vertices_to_update.append(vertex)
-
-    if not vertices_to_update:
-        vertices_to_update = graph.sinks()
-
-    tasklet = graph.update_vertices_with_threadpool(vertices_to_update, options)
+    tasklet = graph.update_vertices_with_threadpool(target_vertices, options)
     dispatch.start_with_tasklet(tasklet)
 
 

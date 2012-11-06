@@ -19,6 +19,7 @@ from ndmake import threadpool
 dprint = debug.dprint_factory(__name__)
 dprint_traverse = debug.dprint_factory(__name__, "traverse")
 dprint_update = debug.dprint_factory(__name__, "update")
+dprint_undemarcated = debug.dprint_factory(__name__, "undemarcated")
 
 
 #
@@ -377,6 +378,9 @@ class Dataset(Vertex):
 
     @dispatch.tasklet
     def update_all_elements(self, graph, options):
+        if options.get("survey_only", False):
+            return
+
         oldest_mtime, newest_mtime = self.mtimes[space.Element()]
         if oldest_mtime > 0:
             dprint_update(self, "all elements up to date")
@@ -395,12 +399,14 @@ class Dataset(Vertex):
                       format("full" if is_full else "partial"),
                       element)
 
-        oldest_mtime, newest_mtime = self.mtimes[element]
-
-        if ... in (oldest_mtime, newest_mtime): # Partial element.
-            assert not is_full
+        if not is_full:
+            dprint_undemarcated("undemarcated", self, element)
             return
-        assert is_full
+
+        if options.get("survey_only", False):
+            return
+
+        oldest_mtime, newest_mtime = self.mtimes[element]
 
         if oldest_mtime == 0 or newest_mtime == mtime.MAX_TIME:
             # There are missing files.
@@ -426,6 +432,16 @@ class Dataset(Vertex):
             # not a source dataset).
         return
         yield
+
+    def clean(self, graph, element, cache_only=False):
+        if cache_only:
+            del self.mtimes[element]
+        else:
+            self.delete_files(element)
+
+        for parent in graph.parents_of(self):
+            if isinstance(parent, Computation):
+                parent.invalidate_up_to_date_cache(graph, element)
 
     def delete_files(self, element):
         for full_element, is_full in self.scope.iterate(element):
@@ -503,6 +519,9 @@ class Computation(Vertex):
 
     @dispatch.tasklet
     def update_all_elements(self, graph, options):
+        if options.get("survey_only", False):
+            return
+
         status = self.statuses[space.Element()]
         if status:
             dprint_update(self, "all elements up to date")
@@ -522,13 +541,22 @@ class Computation(Vertex):
                       element)
 
         if not is_full:
-            # XXX Print if requested.
+            dprint_undemarcated("undemarcated", self, element)
+            return
+
+        if options.get("survey_only", False):
             return
 
         if self.statuses[element]:
             return
 
         yield from self.execute(graph, element, options)
+
+    def clean(self, graph, element, cache_only=False):
+        self.invalidate_up_to_date_cache(graph, element)
+        if not cache_only:
+            for child in graph.children_of(self):
+                child.delete_files(element)
 
     @dispatch.subtasklet
     def execute(self, graph, element, options):
@@ -635,7 +663,7 @@ class Survey(Vertex):
                       element)
 
         if not is_full:
-            self.results[element] = ... # Not really necessary.
+            dprint_undemarcated("undemarcated", self, element)
             return
 
         for parent in graph.parents_of(self):
