@@ -494,11 +494,12 @@ class CommandSurveyer(Surveyer):
         result = self.convert_result(result_text)
         return result
 
-    def run_survey(self, survey, element, namespace):
+    def run_survey(self, survey, element, extra_names, options):
         command = element.render_template(self.command_template,
-                                          extra_names=namespace)
+                                          extra_names=extra_names)
 
-        print(command)
+        if options.get("print_executed_commands", False):
+            print(command)
         # TODO Command should probably run in thread.
         with subprocess.Popen(command, shell=True,
                               bufsize=-1, universal_newlines=True,
@@ -579,7 +580,7 @@ class FilenameSurveyer(Surveyer):
         # return list of results. Or load saved transformed results.
         raise NotImplementedError()
 
-    def run_survey(self, survey, element, namespace):
+    def run_survey(self, survey, element, extra_names, options):
         # TODO Do pattern matching in a smart way (dir-by-dir)
         # save file list (with transformed result?)
         # return list of transformed results.

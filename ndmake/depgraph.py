@@ -342,12 +342,14 @@ class Vertex:
         # Perform the update action.
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing downward:", self)
-        print("starting check/update of {}".format(self))
+        if options.get("print_traversed_vertices", True):
+            print("starting check/update of {}".format(self))
         completion_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(self.update_all_elements(graph, options),
                              return_chan=completion_chan)
         yield dispatch.Recv(completion_chan)
-        print("finished check/update of {}".format(self))
+        if options.get("print_traversed_vertices", True):
+            print("finished check/update of {}".format(self))
 
     def invalidate_up_to_date_cache(self, graph, element):
         # Propagate computation status invalidation to descendants.
@@ -579,11 +581,13 @@ class Computation(Vertex):
 
         command = element.render_template(self.command_template,
                                           extra_names=dataset_name_proxies)
+        print_command = options.get("print_executed_commands", False)
 
         def task_func():
             # Avoid print(), which apparently flushes the output between the
             # string and the newline.
-            sys.stdout.write(command + "\n")
+            if print_command:
+                sys.stdout.write(command + "\n")
 
             with subprocess.Popen(command, shell=True) as proc:
                 # TODO Capture stdout and stderr (need select.select())
@@ -708,7 +712,8 @@ class Survey(Vertex):
                                     if isinstance(parent, Dataset))
 
         self.results[element] = self.surveyer.run_survey(self, element,
-                                                         dataset_name_proxies)
+                                                         dataset_name_proxies,
+                                                         options)
         return
         yield
 

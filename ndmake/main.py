@@ -45,6 +45,11 @@ def run(argv=sys.argv):
     # execution (useful e.g. for PYTHONPATH if using a different Python version
     # to run computations).
 
+    parser.add_argument("-D", "--depth-first", action="store_true",
+                        help="[NOT IMPLEMENTED] start descendant computations "
+                        "as soon as possible, instead of waiting for parents "
+                        "to complete")
+
     parser.add_argument("-i", "--ignore-errors", action="store_true",
                         help="[NOT IMPLEMENTED] ignore nonzero exit statuses "
                         "returned by commands (so long as the expected output "
@@ -65,10 +70,10 @@ def run(argv=sys.argv):
 
     parser.add_argument("-v", "--verbose", "--print-commands",
                         action="store_true",
-                        help="[NOT IMPLEMENTED] print each command before "
-                        "running")
+                        help="print each command before running")
     parser.add_argument("-s", "--silent", "--quiet", action="store_true",
-                        help="[NOT IMPLEMENTED] don't print target names")
+                        help="don't print target names as the dependency "
+                        "graph is traversed")
 
     parser.add_argument("-c", "--cache", "--save-cache", action="store_true",
                         help="cache file modification times and computation "
@@ -134,12 +139,11 @@ def run(argv=sys.argv):
                              "version",
                              "check_symlink_times",
                              "directory",
+                             "depth_first",
                              "ignore_errors",
                              "keep_going",
                              "dry_run",
                              "question",
-                             "verbose",
-                             "silent",
                              "clean_outdated",
                              "touch",
                              "touch_cache",
@@ -204,6 +208,8 @@ def run(argv=sys.argv):
         # datasets and computations.
         options["survey_only"] = True
         options["cache"] = False
+        options["print_executed_commands"] = args.verbose
+        options["print_traversed_vertices"] = False
         tasklet = graph.update_vertices(graph.sinks(), options)
         dispatch.start_with_tasklet(tasklet)
 
@@ -217,8 +223,7 @@ def run(argv=sys.argv):
     if not target_vertices:
         target_vertices = graph.sinks()
 
-    if args.cache:
-        options["cache"] = True
+    options["cache"] = args.cache
 
     if args.jobs is not None:
         if args.jobs < 1:
@@ -231,6 +236,9 @@ def run(argv=sys.argv):
         options["parallel"] = True
         if args.jobs is not None:
             options["jobs"] = args.jobs
+
+    options["print_executed_commands"] = args.verbose
+    options["print_traversed_vertices"] = not args.silent
 
     tasklet = graph.update_vertices_with_threadpool(target_vertices, options)
     dispatch.start_with_tasklet(tasklet)
