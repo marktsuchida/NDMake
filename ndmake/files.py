@@ -19,7 +19,7 @@ def ndmake_dir():
 def escape_value_for_filename(value):
     # This will %-encode all characters except for alphanumerics and the
     # specified "safe" characters, which are safe to have in filenames.
-    return urllib.parse.quote(value, safe=" +,-.=@_")
+    return urllib.parse.quote(str(value), safe=" +,-.=@_")
 
 
 def element_dirs(element):

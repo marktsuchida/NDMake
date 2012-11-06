@@ -440,6 +440,7 @@ class Element:
     def render_template(self, template, *, extra_names={}):
         dict_ = self.as_dict().copy()
         dict_.update(extra_names)
+        dict_["element_path"] = files.element_dirs(self)
         rendition = template.render(dict_)
         return rendition
 
