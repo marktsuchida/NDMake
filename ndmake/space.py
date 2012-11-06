@@ -315,7 +315,7 @@ class Space:
                 return False
         return True
 
-    def canonicalized_element(self, element, require_full=False):
+    def canonicalized_element(self, element, allow_nonsub_extents=False):
         if element.space is self:
             return element
 
@@ -325,15 +325,15 @@ class Space:
         for extent in self.extents:
             dimension = extent.dimension
             if dimension not in element_space_dimensions:
-                if require_full:
-                    raise ValueError("{} is not an element of {}".
-                                     format(element, self))
                 continue
-            if not element.space[dimension].issubextent(extent):
+            if element.space[dimension].issubextent(extent):
+                assigned_extents.append(extent)
+            elif allow_nonsub_extents:
+                assigned_extents.append(element.space[dimension])
+            else:
                 raise ValueError("{} of {} is not subextent of {} of {}".
                                  format(element.space[dimension],
                                         element, extent, self))
-            assigned_extents.append(extent)
             coords[dimension] = element[dimension]
         return Element(Space(assigned_extents), coords)
 
@@ -646,7 +646,8 @@ class Cache:
     def __delitem__(self, element):
         # Used only on the toplevel Cache.
         self.load_from_file()
-        element = self.space.canonicalized_element(element)
+        element = self.space.canonicalized_element(element,
+                                                   allow_nonsub_extents=True)
         self._invalidate(element, 0)
         self.delete_file()
 
