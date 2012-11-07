@@ -268,7 +268,7 @@ def parse_compute(action, token):
 
 
 @subcoroutine
-def parse_dataset(action, token):
+def parse_data(action, token):
     # "data" Identifier {"[" QualifiedIdentifier* "]"}? {":" Identifier?}?
     # EndOfHeading IndentedText?
     entries = {}
@@ -501,7 +501,7 @@ str_escapes = {
               }
 keywords = [
             "defs",
-            "dataset",
+            "data",
             "compute",
             "values",
             "range",
