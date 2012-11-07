@@ -20,7 +20,7 @@ def run(argv=sys.argv):
                         "(default: all datasets and computations)")
 
     parser.add_argument("-V", "--version", action="store_true",
-                        help="[NOT IMPLEMENTED] display version and quit")
+                        help="display version number and quit")
 
     parser.add_argument("-f", "--file", metavar="FILE",
                         default="NDMakefile",
@@ -135,8 +135,11 @@ def run(argv=sys.argv):
 
     args = parser.parse_args()
 
+    if args.version:
+        print("this is an early alpha version of ndmake")
+        sys.exit(0)
+
     unimplemented_options = [
-                             "version",
                              "check_symlink_times",
                              "directory",
                              "depth_first",
