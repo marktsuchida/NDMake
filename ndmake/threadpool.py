@@ -52,11 +52,11 @@ class _PoolThread(threading.Thread):
             func, context, reply_method, sequestered_threads = task
             try:
                 retval = func()
-                exc_info = None
-            except:
+                exception = None
+            except BaseException as e:
                 retval = None
-                exc_info = sys.exc_info()
-            result = context, retval, exc_info
+                exception = e
+            result = context, retval, exception
 
             for sequestered_thread in sequestered_threads:
                 dprint(sequestered_thread.name + ":", "idle (unsequestered)")
@@ -102,11 +102,10 @@ def threadpool(task_chan, max_threads=None):
     # given).
 
     # Retrieve the result:
-    context, retval, exc_info = yield dispatch.Recv(result_channel)
+    context, retval, exception = yield dispatch.Recv(result_channel)
     # The Recv will block until the result is available.
-    # If func returned a value (retval), exc_info is None.
-    # If func raised an exception, retval is None and exc_info is the tuple
-    # (exception_type, exception_value, traceback).
+    # If func returned a value (retval), exception is None.
+    # If func raised an exception, retval is None and exception is set.
 
     # Shut down the thread pool:
     finish_channel = yield dispatch.MakeChannel()
@@ -114,8 +113,8 @@ def threadpool(task_chan, max_threads=None):
                         block=False)
 
     # Wait until thread pool has finished:
-    context, retval, exc_info = yield dispatch.Recv(finish_channel)
-    # In this example, context is None, retval is Ellipsis, exc_info is None.
+    context, retval, exception = yield dispatch.Recv(finish_channel)
+    # In this example, context is None, retval is Ellipsis, exception is None.
     """
 
     if not max_threads:
