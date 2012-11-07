@@ -17,31 +17,42 @@ dprint = debug.dprint_factory(__name__)
 
 class TemplateSet:
     def __init__(self):
-        self.sources = {"__globaldefs": ""}
+        self._environment = None # Create lazily.
+        self.sources = {} # template name -> source text
+        self.globals = {} # name -> value
 
-        def load_template(template_name):
-            prefix = ("{% import '__globaldefs' as g %}"
-                      if template_name != "__globaldefs" else "")
-            source = self.sources[template_name]
-            return prefix + source
-        loader = jinja2.FunctionLoader(load_template)
-        e = jinja2.sandbox.ImmutableSandboxedEnvironment(loader=loader)
+    @property
+    def environment(self):
+        if not self._environment:
+            loader = jinja2.FunctionLoader(lambda name: self.sources[name])
+            e = jinja2.sandbox.ImmutableSandboxedEnvironment(loader=loader)
 
-        import os.path
-        e.filters["dirname"] = os.path.dirname
-        e.filters["basename"] = os.path.basename
-        e.filters["stripext"] = lambda p: os.path.splitext(p)[0]
-        e.filters["fileext"] = lambda p: os.path.splitext(p)[1]
-        e.filters["shquote"] = lambda s: shlex.quote(str(s))
-        e.filters["shsplit"] = lambda l: shlex.split(str(l))
+            import os.path
+            e.filters["dirname"] = os.path.dirname
+            e.filters["basename"] = os.path.basename
+            e.filters["stripext"] = lambda p: os.path.splitext(p)[0]
+            e.filters["fileext"] = lambda p: os.path.splitext(p)[1]
+            e.filters["shquote"] = lambda s: shlex.quote(str(s))
+            e.filters["shsplit"] = lambda l: shlex.split(str(l))
 
-        self.environment = e
+            e.globals.update(self.globals)
+
+            self._environment = e
+        return self._environment
 
     def new_template(self, name, source):
         return Template(self, name, source)
 
     def append_global_defs(self, source):
-        self.sources["__globaldefs"] = self.sources["__globaldefs"] + source
+        # Extract the names defined in source and add them to self.globals,
+        # which will be added to the environment.
+        tmpl = self.environment.from_string(source)
+        tmpl_module = tmpl.module
+        for name in dir(tmpl_module):
+            if not name.startswith("_"):
+                self.globals[name] = getattr(tmpl_module, name)
+        # Invalidate the existing environment.
+        self._environment = None
 
 
 class Template:
@@ -56,27 +67,23 @@ class Template:
         self.params = None
 
     @property
-    def environment(self):
-        return self.templateset.environment
-
-    @property
     def parameters(self):
         if self.params is None:
-            ast = self.environment.parse(self.source, self.name)
+            ast = self.templateset.environment.parse(self.source, self.name)
             self.params = jinja2.meta.find_undeclared_variables(ast)
         return self.params
 
     def render(self, dict_):
-        # Check that all variables are defined.
+        # Check that all variables are defined (to simplify error messages).
         params = self.parameters
         for param in params:
-            if param not in dict_ and param != "g":
+            if param not in dict_ and param not in self.templateset.globals:
                 dprint("rendering " + self.name,
                        "source: \"\"\"{}\"\"\",".format(self.source),
                        "dict:", str(dict_))
                 raise KeyError("undefined template variable: {}".format(param))
 
-        tmpl = self.environment.get_template(self.name)
+        tmpl = self.templateset.environment.get_template(self.name)
         try:
             rendition = tmpl.render(dict_)
         except Exception as e:
