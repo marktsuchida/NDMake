@@ -26,11 +26,13 @@ def escape_value_for_filename(value):
 
 
 def element_path(element):
-    dirs = list("{}={}".
-                format(extent.dimension.name,
-                       escape_value_for_filename(element[extent.dimension]))
-                for extent in element.space.extents)
-    if not dirs:
-        return ""
-    return os.path.join(*dirs)
+    def components():
+        for extent in element.space.extents:
+            name = extent.dimension.name
+            value = element[extent.dimension]
+            format_spec = extent.dimension.default_format
+            if format_spec:
+                value = ("{:" + format_spec + "}").format(value)
+            yield "{}={}".format(name, value)
+    return "/".join(components())
 

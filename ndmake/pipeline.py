@@ -111,6 +111,19 @@ class Pipeline:
                 self._add_edge(("compute", entries["producer"]),
                                ("dimension", name))
 
+        # Dimensions can have a default format specifyer.
+        format_spec = entries.get("format")
+        if format_spec is not None:
+            if mode not in ("range", "range_command"):
+                # TODO Allow for "match"?
+                raise KeyError("non-range dimension {} cannot be given a "
+                               "default format specifier".format(name))
+            if not re.match("[#0 +-]*[0-9]*[doxX]$", format_spec):
+                raise ValueError("dimension default format must be a valid "
+                                 "printf-style integer format specifier "
+                                 "ending in [doxX] (without the `%') "
+                                 "(got: `{}')".format(format_spec))
+
     def _prepare_subdomain_entity(self, entity):
         # Check syntax.
         if self._dim_or_dom_key(entity.name)[0] != "subdomain":
@@ -406,6 +419,7 @@ class Pipeline:
             extent = classes[0](dimension, scope,
                                 template=template, survey=survey)
             dimension.full_extent = extent
+            dimension.default_format = entries.get("format")
             graph.dimensions[name] = dimension # TODO Use a Graph method.
         else:
             extent = classes[1](superextent, extent_name,

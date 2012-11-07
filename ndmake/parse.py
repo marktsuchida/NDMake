@@ -324,7 +324,15 @@ def parse_dimension_or_domain(action, token):
         scope, token = yield from parse_scope(token)
         entries["given"] = scope
 
-    expected = "`:' or eol"
+    if kind == "dimension":
+        try:
+            pairs, token = yield from parse_pairs(("format",), token)
+            entries.update(pairs)
+        except ExpectedGotError as e:
+            e.expected = list(e.expected) + ["`:'", "eol"]
+            raise e
+
+    expected = "`:', or eol"
     if token.is_punctuation(":"):
         expected = "eol"
         token = yield
@@ -367,7 +375,13 @@ def parse_computed_dimension_or_domain(action, token):
         scope, token = yield from parse_scope(token)
         entries["given"] = scope
 
-    # Currently, there are no key-value options.
+    if kind == "dimension":
+        try:
+            pairs, token = yield from parse_pairs(("format",), token)
+            entries.update(pairs)
+        except ExpectedGotError as e:
+            e.expected = list(e.expected) + ["`:'", "eol"]
+            raise e
 
     if token.is_punctuation(":"):
         token = yield
