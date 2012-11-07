@@ -316,11 +316,12 @@ class Pipeline:
 
     def _instantiate_global_entity(self, graph, entity):
         if "defs" in entity.entries:
-            graph.templateset.append_global_defs(entity.entries["defs"])
+            graph.template_environment. \
+                    append_global_defs(entity.entries["defs"])
 
     def _instantiate_dimension_or_domain_entity(self, graph, entity):
         kind, name, entries = entity
-        new_template = graph.templateset.new_template
+        new_template = graph.template_environment.new_template
 
         if kind == "dimension":
             extents = list(self._get_extent_from_graph(graph, dim_or_dom)
@@ -440,8 +441,8 @@ class Pipeline:
                        for dim_or_dom in entries.get("scope", ()))
         scope = space.Space(extents)
 
-        tmpl = graph.templateset.new_template("__dataset_{}".format(name),
-                                              entries["filename"])
+        tmpl = graph.template_environment.\
+                new_template("__dataset_{}".format(name), entries["filename"])
 
         dataset = depgraph.Dataset(graph, name, scope, tmpl)
         self._add_vertex_to_graph(graph, dataset)
@@ -458,8 +459,8 @@ class Pipeline:
                        for dim_or_dom in entries.get("scope", ()))
         scope = space.Space(extents)
 
-        tmpl = graph.templateset.new_template("__compute_{}".format(name),
-                                              entries["command"])
+        tmpl = graph.template_environment. \
+                new_template("__compute_{}".format(name), entries["command"])
 
         parallel = entries.get("parallel", "yes")
         try:

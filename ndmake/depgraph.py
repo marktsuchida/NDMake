@@ -58,7 +58,7 @@ class Graph:
         self.dimensions = {} # name -> Dimension
 
         # Templates.
-        self.templateset = template.TemplateSet()
+        self.template_environment = template.Environment()
 
     def write_graphviz(self, filename):
         with open(filename, "w") as file:

@@ -15,15 +15,15 @@ dprint = debug.dprint_factory(__name__)
 # - In any case, knowledge that the command does not use shell syntax is
 #   necessary.
 
-class TemplateSet:
+class Environment:
     def __init__(self):
-        self._environment = None # Create lazily.
+        self._jinja2_environment = None # Create lazily.
         self.sources = {} # template name -> source text
         self.globals = {} # name -> value
 
     @property
-    def environment(self):
-        if not self._environment:
+    def jinja2_environment(self):
+        if not self._jinja2_environment:
             loader = jinja2.FunctionLoader(lambda name: self.sources[name])
             e = jinja2.sandbox.ImmutableSandboxedEnvironment(loader=loader)
 
@@ -37,8 +37,14 @@ class TemplateSet:
 
             e.globals.update(self.globals)
 
-            self._environment = e
-        return self._environment
+            self._jinja2_environment = e
+        return self._jinja2_environment
+
+    def parse(self, source, name):
+        return self.jinja2_environment.parse(source, name)
+
+    def get_template(self, name):
+        return self.jinja2_environment.get_template(name)
 
     def new_template(self, name, source):
         return Template(self, name, source)
@@ -46,21 +52,21 @@ class TemplateSet:
     def append_global_defs(self, source):
         # Extract the names defined in source and add them to self.globals,
         # which will be added to the environment.
-        tmpl = self.environment.from_string(source)
-        tmpl_module = tmpl.module
+        jinja2_tmpl = self.jinja2_environment.from_string(source)
+        tmpl_module = jinja2_tmpl.module
         for name in dir(tmpl_module):
             if not name.startswith("_"):
                 self.globals[name] = getattr(tmpl_module, name)
         # Invalidate the existing environment.
-        self._environment = None
+        self._jinja2_environment = None
 
 
 class Template:
 
-    def __init__(self, templateset, name, source):
-        templateset.sources[name] = source
+    def __init__(self, environment, name, source):
+        environment.sources[name] = source
         # dprint("template registered", name)
-        self.templateset = templateset
+        self.environment = environment
         self.name = name
         self.source = source
 
@@ -69,7 +75,7 @@ class Template:
     @property
     def parameters(self):
         if self.params is None:
-            ast = self.templateset.environment.parse(self.source, self.name)
+            ast = self.environment.parse(self.source, self.name)
             self.params = jinja2.meta.find_undeclared_variables(ast)
         return self.params
 
@@ -77,15 +83,15 @@ class Template:
         # Check that all variables are defined (to simplify error messages).
         params = self.parameters
         for param in params:
-            if param not in dict_ and param not in self.templateset.globals:
+            if param not in dict_ and param not in self.environment.globals:
                 dprint("rendering " + self.name,
                        "source: \"\"\"{}\"\"\",".format(self.source),
                        "dict:", str(dict_))
                 raise KeyError("undefined template variable: {}".format(param))
 
-        tmpl = self.templateset.environment.get_template(self.name)
+        jinja2_tmpl = self.environment.get_template(self.name)
         try:
-            rendition = tmpl.render(dict_)
+            rendition = jinja2_tmpl.render(dict_)
         except Exception as e:
             raise ValueError("template {t} (source: \"\"\"{s}\"\"\", "
                              "dict: {d}) could not be rendered: {e}".
