@@ -440,7 +440,7 @@ class Element:
     def render_template(self, template, *, extra_names={}):
         dict_ = self.as_dict().copy()
         dict_.update(extra_names)
-        dict_["element_path"] = files.element_dirs(self)
+        dict_["__path__"] = files.element_path(self)
         rendition = template.render(dict_)
         return rendition
 
@@ -488,7 +488,7 @@ class CommandSurveyer(Surveyer):
 
     def cache_file(self, element):
         return os.path.join(files.ndmake_dir(), "survey", self.name,
-                            files.element_dirs(element), "output")
+                            files.element_path(element), "output")
 
     def load_result(self, element):
         result_text = super().load_result(element)
@@ -555,7 +555,7 @@ class FilenameSurveyer(Surveyer):
 
     def cache_file(self, element):
         return os.path.join(files.ndmake_dir(), "survey", self.name,
-                            files.element_dirs(element), "roster")
+                            files.element_path(element), "roster")
 
     def read_mtimes(self, element):
         roster_old, roster_new = super().read_mtimes(element)
@@ -724,7 +724,7 @@ class Cache:
 
     def write_file_lines(self, writer, fprint, element, level):
         if self.cached is not None:
-            fprint(shlex.quote(os.path.join("/", files.element_dirs(element))),
+            fprint(shlex.quote(os.path.join("/", files.element_path(element))),
                    shlex.quote(writer(self.cached)))
         if len(element) == self.space.ndims or not level:
             return
