@@ -467,25 +467,29 @@ class Dataset(Vertex):
         else:
             # Given a partial element, we still want to be able to create
             # directories whose names are fixed. There might be a better way
-            # to do this, but for now, we set the parameters in the
-            # undemarcated subspace to a likely-unique marker string and remove
-            # path components from the end until the marker string no longer
-            # appears in the result.
-            unassigned_marker = "@@@@@UNASSIGNED@@@@@"
-            coords = {}
+            # to do this, but for now, we empirically find the common prefix
+            # path by setting unassigned dimensions to different values.
+            coords1, coords2 = {}, {}
             for extent in self.scope.extents:
                 if extent.dimension in element.space.dimensions:
-                    coords[extent.dimension] = element[extent.dimension]
-                    continue
-                coords[extent.dimension] = unassigned_marker
-            full_element = space.Element(self.scope, coords)
-            filename = full_element.render_template(self.filename_template)
-            dirname = os.path.dirname(filename)
-            while unassigned_marker in dirname:
-                dirname = os.path.dirname(dirname)
-                if not dirname:
+                    value = element[extent.dimension]
+                    coords1[extent.dimension] = value
+                    coords2[extent.dimension] = value
+                else:
+                    coords1[extent.dimension] = extent.value_type(123456)
+                    coords2[extent.dimension] = extent.value_type(654321)
+            full_element1 = space.Element(self.scope, coords1)
+            full_element2 = space.Element(self.scope, coords2)
+            filename1 = full_element1.render_template(self.filename_template)
+            filename2 = full_element2.render_template(self.filename_template)
+            dirname1 = os.path.dirname(filename1)
+            dirname2 = os.path.dirname(filename2)
+            while dirname1 != dirname2:
+                dirname1 = os.path.dirname(dirname1)
+                dirname2 = os.path.dirname(dirname2)
+                if not dirname1 or not dirname2:
                     return None
-            return dirname
+            return dirname1
 
     def create_dirs(self, element):
         dirname = self.dirname(element)
