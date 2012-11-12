@@ -243,7 +243,9 @@ def parse_compute(action, token):
         pairs, token = yield from parse_pairs(("parallel",), token)
         entries.update(pairs)
     except ExpectedGotError as e:
-        e.expected = list(e.expected) + ["`:'", "eol"]
+        expected = ([e.expected] if isinstance(e.expected, str)
+                    else list(e.expected))
+        e.expected = expected + ["`:'", "eol"]
         raise e
 
     if token.is_punctuation(":"):
@@ -329,7 +331,9 @@ def parse_dimension_or_domain(action, token):
             pairs, token = yield from parse_pairs(("format",), token)
             entries.update(pairs)
         except ExpectedGotError as e:
-            e.expected = list(e.expected) + ["`:'", "eol"]
+            expected = ([e.expected] if isinstance(e.expected, str)
+                        else list(e.expected))
+            e.expected = expected + ["`:'", "eol"]
             raise e
 
     expected = "`:', or eol"
@@ -380,7 +384,9 @@ def parse_computed_dimension_or_domain(action, token):
             pairs, token = yield from parse_pairs(("format",), token)
             entries.update(pairs)
         except ExpectedGotError as e:
-            e.expected = list(e.expected) + ["`:'", "eol"]
+            expected = ([e.expected] if isinstance(e.expected, str)
+                        else list(e.expected))
+            e.expected = expected + ["`:'", "eol"]
             raise e
 
     if token.is_punctuation(":"):
@@ -538,6 +544,42 @@ keywords = [
 #     lexer.send((line, lineno))
 # lexer.close()
 
+class RestOfLine:
+    # A representation of the unconsumed portion of the current line.
+
+    def __init__(self, line, lineno):
+        self.line = line
+        self.lineno = lineno
+        self.column = 1
+
+    def __len__(self):
+        return len(self.line)
+
+    def peek(self, length=1):
+        return self.line[:length]
+
+    def consume(self, length=1):
+        ret = self.line[:length]
+        self.line = self.line[length:]
+        self.column += len(ret)
+        return ret
+
+    def match(self, pattern):
+        return re.match(pattern, self.line)
+
+    def is_empty(self):
+        return not self.line.strip()
+
+    def is_comment(self):
+        return self.line.lstrip().startswith(comment)
+
+    def is_empty_or_comment(self):
+        s = self.line.strip()
+        if not s or s.startswith(comment):
+            return True
+        return False
+
+
 @coroutine
 def lex(action):
     non_eof_lexer = lex_non_eof(action)
@@ -551,58 +593,64 @@ def lex(action):
             action(EndOfInput(lineno, len(line)))
             return
         else:
-            non_eof_lexer.send((line, lineno))
+            non_eof_lexer.send(RestOfLine(line, lineno))
 
 
 @coroutine
 def lex_non_eof(action):
+    # Receives RestOfLine objects via yield.
     while True:
-        line, lineno = yield
-        if not line.strip():
-            continue # Ignore empty line.
-        if line.lstrip().startswith(comment):
-            continue # Ignore comment line.
-        if line[0] in hspace:
+        rol = yield
+        if rol.is_empty_or_comment():
+            continue
+        if rol.peek() in hspace:
             raise SyntaxError("unexpected indent", lineno=lineno)
         # Now we have the first line of the first chunk.
         break
 
-    while True:
+    done = False
+    while not done:
         heading_lexer = lex_heading(action)
         while True:
-            if heading_lexer.send((line, lineno)):
+            if heading_lexer.send(rol):
                 break
-            line, lineno = yield
-            if not line.strip():
-                continue
-            if line.lstrip().startswith(comment):
-                continue
+            while True:
+                try:
+                    rol = yield
+                except GeneratorExit:
+                    heading_lexer.close()
+                    return
+                if not rol.is_empty_or_comment():
+                    break
         
         # Now we optionally have indented lines.
         indented_lines = []
         indented_lines_lineno = None
         while True:
             try:
-                line, lineno = yield
-            except GeneratorExit:
-                text = process_indented_lines(indented_lines)
-                if text:
-                    action(IndentedText(indented_lines_lineno, 0, text))
-                return
+                rol = yield
+            except GeneratorExit: # End of input.
+                done = True
+                break
 
             if indented_lines_lineno is None:
-                indented_lines_lineno = lineno
+                # Save the line number of the first line.
+                indented_lines_lineno = rol.lineno
 
-            if not line.strip():
-                indented_lines.append(line)
+            if rol.is_empty():
+                indented_lines.append(rol.line)
                 continue
-            if line.startswith(comment):
+
+            if rol.is_comment():
                 continue # Ignore comment line.
-            if line[0] in hspace:
-                indented_lines.append(line)
+
+            if rol.peek() in hspace:
+                indented_lines.append(rol.line)
                 continue
+
             # We have found the next first line of a chunk.
             break
+
         text = process_indented_lines(indented_lines)
         if text:
             action(IndentedText(indented_lines_lineno, 0, text))
@@ -610,149 +658,139 @@ def lex_non_eof(action):
 
 @coroutine
 def lex_heading(action):
+    # Receives nonempty RestOfLine objects via yield.
     # This coroutine yields a bool (True if reached end of heading line).
-    line, lineno = yield
-    column = 0
+    rol = yield
     bracket_level = 0
-    while line or bracket_level > 0:
-        if not line:
-            line, lineno = yield False
+    while len(rol) or bracket_level:
+        if not len(rol):
+            rol = yield False
 
         hspace_pattern = "[{}]+".format(hspace)
-        m = re.match(hspace_pattern, line)
+        m = rol.match(hspace_pattern)
         if m:
-            line = line[m.end():]
-            column += m.end()
+            rol.consume(m.end())
             continue
 
-        if line[0] == "[":
-            action(Punctuation(lineno, column, "["))
-            bracket_level += 1
-            line = line[1:]
-            column += 1
+        ch = rol.peek()
+        if ch in "[]=.:":
+            action(Punctuation(rol.lineno, rol.column, ch))
+            if ch == "[":
+                bracket_level += 1
+            elif ch == "]":
+                bracket_level = min(0, bracket_level - 1)
+            rol.consume()
             continue
 
-        if line[0] == "]":
-            action(Punctuation(lineno, column, "]"))
-            bracket_level -= 1
-            line = line[1:]
-            column += 1
-            continue
-
-        if line[0] == "=":
-            action(Punctuation(lineno, column, "="))
-            line = line[1:]
-            column += 1
-            continue
-
-        if line[0] == ".":
-            action(Punctuation(lineno, column, "."))
-            line = line[1:]
-            column += 1
-            continue
-
-        if line[0] == ":":
-            action(Punctuation(lineno, column, ":"))
-            line = line[1:]
-            column += 1
-            continue
-
-        if line[0] in ('"', "'"):
-            open_quote = line[0]
-            start_lineno, start_column = lineno, column
-            line = line[1:]
-            column += 1
+        if ch in ('"', "'"):
+            open_quote = ch
+            start_lineno, start_column = rol.lineno, rol.column
+            rol.consume()
             strings = []
             while True:
-                string, length, finished = get_quoted_string(line, open_quote)
+                string, finished = get_quoted_string(rol, open_quote)
                 strings.append(string)
                 if finished:
-                    line = line[length:]
-                    column += length
                     break
                 strings.append("\n")
-                line, lineno = yield False
-                column = 0
+                try:
+                    rol = yield False
+                except GeneratorExit:
+                    raise SyntaxError("unterminated string",
+                                      start_lineno, start_column)
             string = "".join(strings)
             action(String(start_lineno, start_column, string))
             continue
 
-        if line == "\\": # Backslash at end of line: continuation.
-            line, lineno = yield False
-            column = 0
+        if ch == "\\" and len(rol) == 1:
+            # Backslash at end of line: continuation.
+            rol = yield False
             continue
 
-        m = qualified_word_pattern.match(line)
+        m = rol.match(qualified_word_pattern)
         if m:
             word = m.group()
             if m.group(1): # Contains `.'
-                action(QualifiedIdentifier(lineno, column, word))
+                action(QualifiedIdentifier(rol.lineno, rol.column, word))
             elif word in keywords:
-                action(Keyword(lineno, column, word))
+                action(Keyword(rol.lineno, rol.column, word))
             else:
-                action(Identifier(lineno, column, word))
-            line = line[m.end():]
-            column += m.end()
+                action(Identifier(rol.lineno, rol.column, word))
+            rol.consume(m.end())
             continue
 
         # Unexpected character.
-        raise SyntaxError("unexpected character ({})".format(line[0]),
-                          lineno, column)
+        raise SyntaxError("unexpected character ({})".format(ch),
+                          rol.lineno, rol.column)
 
-    action(EndOfHeading(lineno, column))
+    action(EndOfHeading(rol.lineno, rol.column))
     yield True
 
 
-def get_quoted_string(line, open_quote):
+def get_quoted_string(rol, open_quote):
     chars = []
-    it = enumerate(line)
-    while True:
-        pos, char = next(it)
-        if char == open_quote:
-            return "".join(chars), pos + 1, True
-        if char == "\\":
-            pos, char = next(it)
-            if char in str_escapes:
-                chars.append(str_escapes[char])
+    while len(rol):
+        # It would be faster to scan non-quote non-escape spans using regular
+        # expressions, but we only encounter a small number of short strings,
+        # so we don't bother for now.
+
+        ch = rol.consume()
+        if ch == open_quote:
+            return "".join(chars), True
+
+        if ch == "\\":
+            ch = rol.peek()
+            if ch in str_escapes:
+                chars.append(str_escapes[rol.consume()])
                 continue
 
-            if char == "x":
-                digits = "".join(digit for pos, digit in
-                                 (next(it) for i in range(2)))
-                code = int(digits, 16)
-                chars.append(chr(code))
-                continue
-
-            if char in "0123456789":
-                digits = char + "".join(digit for pos, digit in
-                                        (next(it) for i in range(2)))
-                code = int(digits, 8)
-                chars.append(chr(code))
-                continue
-
-            if char == "u":
-                digits = "".join(digit for pos, digit in
-                                 (next(it) for i in range(4)))
-                code = int(digits, 16)
-                chars.append(chr(code))
-                continue
-
-            if char == "U":
-                digits = "".join(digit for pos, digit in
-                                 (next(it) for i in range(8)))
-                code = int(digits, 16)
-                chars.append(chr(code))
+            if ch and ch in "01234567xuU":
+                chars.append(get_unicode_escape(rol))
                 continue
 
             # Otherwise, not an escape.
             chars.append("\\")
-            chars.append(char)
+            # Leave peeked ch unconsumed.
             continue
 
-        chars.append(char)
+        # An ordinary character.
+        chars.append(ch)
 
     # We have reached the end of line without encountering the closing quote.
-    return "".join(chars), pos, False
+    return "".join(chars), False
+
+
+def get_unicode_escape(rol):
+    # rol should be just after the backslash.
+    escape_start_column = rol.column
+    ch = rol.peek()
+
+    if ch in "xuU":
+        escape_ch = rol.consume()
+        base = 16
+        # Must have the required digits.
+        n_digits = {"x": 2, "u": 4, "U": 8}[escape_ch]
+        digits = rol.consume(n_digits)
+        if len(digits) < n_digits:
+            raise SyntaxError("invalid \\{}{} escape".
+                              format(escape_ch, "X" * n_digits),
+                              rol.lineno, escape_start_column)
+
+    else:
+        escape_ch = ""
+        base = 8
+        digits = ""
+        while len(rol) and rol.peek() in "01234567" and len(digits) <= 3:
+            digits += rol.consume()
+
+    try:
+        code = int(digits, base)
+    except ValueError:
+        raise SyntaxError("invalid \\{}{} escape".
+                          format(escape_ch, "X" * n_digits),
+                          rol.lineno, escape_start_column)
+
+    return chr(code)
 
 
 def process_indented_lines(lines):
