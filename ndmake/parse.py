@@ -506,6 +506,9 @@ hspace = " \t"
 comment = "#"
 qualified_word_pattern = \
         re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
+open_parens = {
+               "]": "[",
+              }
 str_escapes = {
                "\n": "",
                "\\": "\\",
@@ -661,8 +664,8 @@ def lex_heading(action):
     # Receives nonempty RestOfLine objects via yield.
     # This coroutine yields a bool (True if reached end of heading line).
     rol = yield
-    bracket_level = 0
-    while len(rol) or bracket_level:
+    paren_stack = []
+    while len(rol) or paren_stack:
         if not len(rol):
             rol = yield False
 
@@ -676,9 +679,12 @@ def lex_heading(action):
         if ch in "[]=.:":
             action(Punctuation(rol.lineno, rol.column, ch))
             if ch == "[":
-                bracket_level += 1
+                paren_stack.append(ch)
             elif ch == "]":
-                bracket_level = min(0, bracket_level - 1)
+                # As a lexer we tolerate unmatched parens (which lead to parse
+                # errors anyway), but keep track of the matching ones.
+                if paren_stack and paren_stack[-1] == open_parens[ch]:
+                    paren_stack.pop()
             rol.consume()
             continue
 
