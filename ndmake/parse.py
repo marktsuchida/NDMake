@@ -39,11 +39,8 @@ def read_ndmakefile(file, filename=None):
     lexer = lex(lexer_action)
 
     try:
-        for i, line in enumerate(file):
-            line = line.rstrip("\n")
-            lineno = i + 1 # One-based line numbers.
-            dprint_line("sending line to lexer", "{:d}:".format(lineno), line)
-            lexer.send((line, lineno))
+        for line in file:
+            lexer.send(line)
         lexer.close()
     except SyntaxError as e:
         e.filename = filename
@@ -594,10 +591,12 @@ keywords = [
 
 # Usage:
 # lexer = lex(action)  # action is a callable accepting Tokens
-# for i, line in enumerate(lines):
-#     lineno = i + 1
-#     lexer.send((line, lineno))
+# for line in file:
+#     lexer.send(line)
 # lexer.close()
+
+# In some cases, action(token) may return control keywords instructing the
+# lexer to switch modes.
 
 class RestOfLine:
     # A representation of the unconsumed portion of the current line.
@@ -637,22 +636,26 @@ class RestOfLine:
 
 @coroutine
 def lex(action):
-    non_eof_lexer = lex_non_eof(action)
+    # Receives lines as bare strings.
+    lineno_counter = itertools.count(1)
+    line_lexer = lex_lines(action)
     line = ""
-    lineno = 0
+    lineno = 1
     while True:
         try:
-            line, lineno = yield
+            line = (yield).rstrip("\n")
         except GeneratorExit:
-            non_eof_lexer.close()
+            line_lexer.close()
             action(EndOfInput(lineno, len(line)))
             return
         else:
-            non_eof_lexer.send(RestOfLine(line, lineno))
+            lineno = next(lineno_counter)
+            dprint_line("lexer received line", "{:d}:".format(lineno), line)
+            line_lexer.send(RestOfLine(line, lineno))
 
 
 @coroutine
-def lex_non_eof(action):
+def lex_lines(action):
     # Receives RestOfLine objects via yield.
     while True:
         rol = yield
@@ -730,7 +733,7 @@ def lex_heading(action):
 
         ch = rol.peek()
         if ch in "[]()=.,:":
-            action(Punctuation(rol.lineno, rol.column, ch))
+            ctrl = action(Punctuation(rol.lineno, rol.column, ch))
             if ch in "[(":
                 paren_stack.append(ch)
             elif ch in ")]":
