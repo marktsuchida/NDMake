@@ -7,6 +7,7 @@ from ndmake import debug
 dprint = debug.dprint_factory(__name__)
 dprint_line = debug.dprint_factory(__name__, "line")
 dprint_string = debug.dprint_factory(__name__, "string")
+dprint_indented = debug.dprint_factory(__name__, "indented")
 dprint_token = debug.dprint_factory(__name__, "token")
 dprint_entity = debug.dprint_factory(__name__, "entity")
 dprint_coroutine = debug.dprint_factory(__name__, "coroutine")
@@ -552,12 +553,6 @@ def parse_optional_indented_text(token):
 
 hspace = " \t"
 comment = "#"
-qualified_word_pattern = \
-        re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
-open_parens = {
-               "]": "[",
-               ")": "(",
-              }
 str_escapes = {
                "\n": "",
                "\\": "\\",
@@ -664,67 +659,24 @@ def lex_lines(action):
             continue
         if rol.peek() in hspace:
             raise SyntaxError("unexpected indent", lineno=lineno)
-        # Now we have the first line of the first chunk.
+        # Now we have the first unindented line.
         break
 
-    done = False
-    while not done:
-        heading_lexer = lex_heading(action)
-        while True:
-            if heading_lexer.send(rol):
-                break
-            while True:
-                try:
-                    rol = yield
-                except GeneratorExit:
-                    heading_lexer.close()
-                    return
-                if not rol.is_empty_or_comment():
-                    break
-        
-        # Now we optionally have indented lines.
-        indented_lines = []
-        indented_lines_lineno = None
-        while True:
-            try:
-                rol = yield
-            except GeneratorExit: # End of input.
-                done = True
-                break
-
-            if indented_lines_lineno is None:
-                # Save the line number of the first line.
-                indented_lines_lineno = rol.lineno
-
-            if rol.is_empty():
-                indented_lines.append(rol.line)
-                continue
-
-            if rol.is_comment():
-                continue # Ignore comment line.
-
-            if rol.peek() in hspace:
-                indented_lines.append(rol.line)
-                continue
-
-            # We have found the next first line of a chunk.
-            break
-
-        text = process_indented_lines(indented_lines)
-        if text:
-            action(IndentedText(indented_lines_lineno, 0, text))
+    while True:
+        rol = yield from lex_heading(action, rol)
+        rol = yield from lex_indented_lines(action, rol)
 
 
-@coroutine
-def lex_heading(action):
-    # Receives nonempty RestOfLine objects via yield.
-    # This coroutine yields a bool (True if reached end of heading line).
-    rol = yield
+@subcoroutine
+def lex_heading(action, rol):
     paren_stack = []
-    while len(rol) or paren_stack:
-        if not len(rol):
-            rol = yield False
-        # Now rol is guaranteed not to be empty.
+    while True:
+        if paren_stack:
+            while rol.is_empty_or_comment():
+                # Let parser deal with eof error within parentheses.
+                rol = yield
+        elif not len(rol):
+            break
 
         hspace_pattern = "[{}]+".format(hspace)
         m = rol.match(hspace_pattern)
@@ -736,13 +688,17 @@ def lex_heading(action):
         if ch in "[]()=.,:":
             ctrl = action(Punctuation(rol.lineno, rol.column, ch))
             if ch in "[(":
-                paren_stack.append(ch)
+                paren_stack.append({"[": "]", "(": ")"}[ch])
             elif ch in ")]":
                 # As a lexer we tolerate unmatched parens (which lead to parse
                 # errors anyway), but keep track of the matching ones.
-                if paren_stack and paren_stack[-1] == open_parens[ch]:
+                if paren_stack and ch == paren_stack[-1]:
                     paren_stack.pop()
             rol.consume()
+            continue
+
+        if re.match("[A-Za-z_]", ch):
+            rol = yield from lex_word(action, rol)
             continue
 
         if ch in "'\"":
@@ -751,19 +707,11 @@ def lex_heading(action):
 
         if ch == "\\" and len(rol) == 1:
             # Backslash at end of line: continuation.
-            rol = yield False
-            continue
-
-        m = rol.match(qualified_word_pattern)
-        if m:
-            word = m.group()
-            if m.group(1): # Contains `.'
-                action(QualifiedIdentifier(rol.lineno, rol.column, word))
-            elif word in keywords:
-                action(Keyword(rol.lineno, rol.column, word))
-            else:
-                action(Identifier(rol.lineno, rol.column, word))
-            rol.consume(m.end())
+            try:
+                rol = yield
+            except GeneratorExit:
+                raise SyntaxError("line continuation at end of input",
+                                  rol.lineno, rol.column)
             continue
 
         # Unexpected character.
@@ -771,7 +719,54 @@ def lex_heading(action):
                           rol.lineno, rol.column)
 
     action(EndOfHeading(rol.lineno, rol.column))
-    yield True
+
+    rol = yield
+    return rol
+
+
+@subcoroutine
+def lex_indented_lines(action, rol):
+    indented_lines = [] # Includes empty lines and indented comment lines.
+    start_lineno = rol.lineno
+    while True:
+        if len(rol) and rol.peek() not in hspace:
+            # A non-indented line.
+            if not rol.is_comment():
+                break
+
+        if not rol.is_comment():
+            dprint_indented("indented line", rol.line)
+            indented_lines.append(rol.line)
+
+        try:
+            rol = yield
+        except GeneratorExit:
+            break
+
+    if indented_lines:
+        text = process_indented_lines(indented_lines)
+        if text:
+            dprint_indented("processed indented", text)
+            action(IndentedText(start_lineno, 0, text))
+
+    return rol
+
+
+_qualified_word_pattern = \
+        re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
+@subcoroutine
+def lex_word(action, rol):
+    m = rol.match(_qualified_word_pattern)
+    assert m
+    word = rol.consume(m.end())
+    if m.group(1): # Contains `.'
+        action(QualifiedIdentifier(rol.lineno, rol.column, word))
+    elif word in keywords:
+        action(Keyword(rol.lineno, rol.column, word))
+    else:
+        action(Identifier(rol.lineno, rol.column, word))
+    return rol
+    yield
 
 
 @subcoroutine
@@ -877,10 +872,11 @@ def process_indented_lines(lines):
     if not lines:
         return None
 
+    # Find the common indent.
     common_space_prefix = space_prefix(lines[0])
     for line in lines[1:]:
         if not line.strip():
-            continue
+            continue # Ignore indent of empty lines.
         common_space_prefix = common_prefix(common_space_prefix,
                                             space_prefix(line))
 
