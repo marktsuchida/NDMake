@@ -141,7 +141,7 @@ class Pipeline:
                 # TODO Allow for "match"?
                 raise KeyError("non-range dimension {} cannot be given a "
                                "default format specifier".format(name))
-            if not re.match("[#0 +-]*[0-9]*[doxX]$", format_spec):
+            if not re.match("[#0 +-]*[0-9]*[doxX]\\Z", format_spec):
                 raise ValueError("dimension default format must be a valid "
                                  "printf-style integer format specifier "
                                  "ending in [doxX] (without the `%') "

@@ -6,6 +6,7 @@ from ndmake import debug
 
 dprint = debug.dprint_factory(__name__)
 dprint_line = debug.dprint_factory(__name__, "line")
+dprint_string = debug.dprint_factory(__name__, "string")
 dprint_token = debug.dprint_factory(__name__, "token")
 dprint_entity = debug.dprint_factory(__name__, "entity")
 dprint_coroutine = debug.dprint_factory(__name__, "coroutine")
@@ -745,23 +746,7 @@ def lex_heading(action):
             continue
 
         if ch in "'\"":
-            open_quote = ch
-            start_lineno, start_column = rol.lineno, rol.column
-            rol.consume()
-            strings = []
-            while True:
-                string, finished = get_quoted_string(rol, open_quote)
-                strings.append(string)
-                if finished:
-                    break
-                strings.append("\n")
-                try:
-                    rol = yield False
-                except GeneratorExit:
-                    raise SyntaxError("unterminated string",
-                                      start_lineno, start_column)
-            string = "".join(strings)
-            action(String(start_lineno, start_column, string))
+            rol = yield from lex_quoted_string(action, rol)
             continue
 
         if ch == "\\" and len(rol) == 1:
@@ -789,37 +774,66 @@ def lex_heading(action):
     yield True
 
 
-def get_quoted_string(rol, open_quote):
-    chars = []
-    while len(rol):
-        # It would be faster to scan non-quote non-escape spans using regular
-        # expressions, but we only encounter a small number of short strings,
-        # so we don't bother for now.
+@subcoroutine
+def lex_quoted_string(action, rol):
+    start_lineno, start_column = rol.lineno, rol.column
+    quote_char = rol.consume()
+    assert quote_char in ("'", '"')
 
-        ch = rol.consume()
-        if ch == open_quote:
-            return "".join(chars), True
+    triple_quote = False
+    if rol.peek(2) == quote_char + quote_char:
+        rol.consume(2)
+        triple_quote = True
 
-        if ch == "\\":
-            ch = rol.peek()
-            if ch in str_escapes:
-                chars.append(str_escapes[rol.consume()])
-                continue
+    # Now we are just after the opening quote.
+    chunks = []
+    while True:
+        while not len(rol):
+            if not triple_quote:
+                raise SyntaxError("unterminated string",
+                                  start_lineno, start_column)
+            chunks.append("\n")
+            try:
+                rol = yield
+            except GeneratorExit:
+                raise SyntaxError("unterminated string",
+                                  start_lineno, start_column)
 
-            if ch and ch in "01234567xuU":
-                chars.append(get_unicode_escape(rol))
-                continue
-
-            # Otherwise, not an escape.
-            chars.append("\\")
-            # Leave peeked ch unconsumed.
+        m = rol.match("[^\"\'\\\\]+")
+        if m:
+            chunks.append(rol.consume(m.end()))
             continue
 
-        # An ordinary character.
-        chars.append(ch)
+        ch = rol.peek()
+        if ch == quote_char:
+            if not triple_quote:
+                rol.consume()
+                break
+            elif rol.peek(3) == quote_char * 3:
+                rol.consume(3)
+                break
 
-    # We have reached the end of line without encountering the closing quote.
-    return "".join(chars), False
+        if ch == "\\":
+            chunks.append(get_string_escape(rol))
+            continue
+
+        chunks.append(rol.consume()) # A non-triple quote.
+
+    dprint_string("string chunks", chunks)
+    action(String(start_lineno, start_column, "".join(chunks)))
+    return rol
+
+
+def get_string_escape(rol):
+    assert rol.consume == "\\"
+    ch = rol.peek()
+    if ch in str_escapes:
+        return str_escapes[rol.consume()]
+    if ch and ch in "01234567xuU":
+        return get_unicode_escape(rol)
+    # Otherwise, not an escape.
+    # Leave peeked ch unconsumed.
+    return "\\"
 
 
 def get_unicode_escape(rol):
