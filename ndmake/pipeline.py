@@ -11,8 +11,25 @@ from ndmake import template
 dprint = debug.dprint_factory(__name__)
 
 # A static representation of a computational pipeline.
-
 # A depgraph.Graph is generated from a Pipeline.
+
+# Implementation notes: Construction of a Pipeline is done by adding entities
+# via add_entity(). This is implemented by _prepare_*_entity() and
+# _process_*_entity(), the latter of which adds appropriate edges (declaratory
+# dependencies) to other entities (which may not exist yet).
+#
+# Once the entities have been added (resulting in an internal directed acyclic
+# graph), depgraph() can be called to instantiate the depgraph.Graph. This is
+# implemented by _instantiate_*_entity(), which are called in topologically
+# sorted order.
+
+
+def or_join(items, op="or"):
+    if not items:
+        return "nothing"
+    if len(items) == 1:
+        return items[0]
+    return "{} {} {}".format(", ".join(items[:-1]), op, items[-1])
 
 
 Entity = collections.namedtuple("Entity", ("kind", "name", "entries"))
@@ -64,13 +81,18 @@ class Pipeline:
                          format(name))
 
     def _prepare_global_entity(self, entity):
-        if entity.name is None:
+        if "macro" in entity.entries:
+            if entity.name is None:
+                raise ValueError("missing macro name")
+            elif not self._check_identifier(entity.name):
+                raise ValueError("invalid macro name: {}".format(entity.name))
+        if entity.name is None: # Allowed for global entity with "defs".
             entity = Entity(entity.kind, "<default>", entity.entries)
         return entity
 
     def _process_global_entity(self, entity):
         # Make dependent on previous `global' entity so that order is
-        # preserved in the later topological sort.
+        # preserved in the upcoming topological sort.
         if self.last_global_entity_name is not None:
             self._add_edge(("global", self.last_global_entity_name),
                            ("global", entity.name))
@@ -94,11 +116,12 @@ class Pipeline:
         for key in mode_keys:
             if key in entries:
                 if mode is not None:
-                    mode_keys_string = (", ".join(mode_keys[:-1]) + ", or " +
-                                        mode_keys[-1])
                     raise KeyError("exactly one of {modes} must be given".
-                                   format(modes=mode_keys_string))
+                                   format(modes=or_join(mode_keys)))
                 mode = key
+        if mode is None:
+            raise KeyError("exactly one of {modes} must be given".
+                           format(modes=or_join(mode_keys)))
 
         # Command-based surveyed dimensions optionally depend on inputs.
         if mode in ("command", "range_command"):
@@ -144,11 +167,12 @@ class Pipeline:
         for key in mode_keys:
             if key in entries:
                 if mode is not None:
-                    mode_keys_string = (", ".join(mode_keys[:-1]) + ", or " +
-                                        mode_keys[-1])
                     raise KeyError("exactly one of {modes} must be given".
-                                   format(modes=mode_keys_string))
+                                   format(modes=or_join(mode_keys)))
                 mode = key
+        if mode is None:
+            raise KeyError("exactly one of {modes} must be given".
+                           format(modes=or_join(mode_keys)))
 
         # Command-based surveyed subdomains optionally depend on inputs.
         if mode in ("command", "range_command", "slice_command"):
@@ -315,9 +339,32 @@ class Pipeline:
         graph.add_edge(vertex1, vertex2)
 
     def _instantiate_global_entity(self, graph, entity):
-        if "defs" in entity.entries:
-            graph.template_environment. \
-                    append_global_defs(entity.entries["defs"])
+        _, name, entries = entity
+
+        mode = None
+        mode_keys = ("defs", "macro")
+        for key in mode_keys:
+            if key in entries:
+                if mode is not None:
+                    raise KeyError("exactly one of {modes} must be given".
+                                   format(modes=or_join(mode_keys)))
+                mode = key
+        if mode is None:
+            raise KeyError("exactly one of {modes} must be given".
+                           format(modes=or_join(mode_keys)))
+
+        if mode == "defs":
+            graph.template_environment.append_global_defs(entries["defs"])
+
+        elif mode == "macro":
+            params = entries.get("params", ())
+            text = entries.get("macro", "")
+            source = "\n".join(("{{% macro {name}({params}) -%}}".
+                                format(name=name, params=", ".join(params)),
+                                text,
+                                "{%- endmacro %}"))
+            graph.template_environment.append_global_defs(source)
+
 
     def _instantiate_dimension_or_domain_entity(self, graph, entity):
         kind, name, entries = entity

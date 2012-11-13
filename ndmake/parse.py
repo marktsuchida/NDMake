@@ -207,7 +207,7 @@ def parse_defs(action, token):
     entries = {}
 
     expected = "`:' or eol"
-    token = yield # XXX Why is this returning None???
+    token = yield
     if token.is_punctuation(":"):
         expected = "eol"
         token = yield
@@ -220,6 +220,56 @@ def parse_defs(action, token):
         entries["defs"] = text
 
     action("global", next_global_entity_name(), entries)
+    return token
+
+
+@subcoroutine
+def parse_macro(action, token):
+    # "macro" Identifier "(" {Identifier,*} ")" ":"? EndOfHeading IndentedText?
+    entries = {}
+
+    token = yield
+    if not isinstance(token, Identifier):
+        raise ExpectedGotError("name of macro", token)
+    name = token.text
+
+    token = yield
+    if not token.is_punctuation("("):
+        raise ExpectedGotError("`('", token)
+
+    param_names = []
+    while True:
+        token = yield
+        if token.is_punctuation(")"):
+            break
+        elif isinstance(token, Identifier):
+            param_names.append(token.text)
+        else:
+            raise ExpectedGotError("parameter name or `)'", token)
+
+        token = yield
+        if token.is_punctuation(")"):
+            break
+        elif token.is_punctuation(","):
+            continue
+        else:
+            raise ExpectedGotError("`,' or `)'", token)
+    entries["params"] = param_names
+
+    expected = "`:' or eol"
+    token = yield
+    if token.is_punctuation(":"):
+        expected = "eol"
+        token = yield
+    if not isinstance(token, EndOfHeading):
+        raise ExpectedGotError(expected, token)
+
+    token = yield
+    text, token = yield from parse_optional_indented_text(token)
+    if text:
+        entries["macro"] = text
+
+    action("global", name, entries)
     return token
 
 
@@ -508,6 +558,7 @@ qualified_word_pattern = \
         re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
 open_parens = {
                "]": "[",
+               ")": "(",
               }
 str_escapes = {
                "\n": "",
@@ -524,6 +575,7 @@ str_escapes = {
               }
 keywords = [
             "defs",
+            "macro",
             "data",
             "compute",
             "values",
@@ -668,6 +720,7 @@ def lex_heading(action):
     while len(rol) or paren_stack:
         if not len(rol):
             rol = yield False
+        # Now rol is guaranteed not to be empty.
 
         hspace_pattern = "[{}]+".format(hspace)
         m = rol.match(hspace_pattern)
@@ -676,11 +729,11 @@ def lex_heading(action):
             continue
 
         ch = rol.peek()
-        if ch in "[]=.:":
+        if ch in "[]()=.,:":
             action(Punctuation(rol.lineno, rol.column, ch))
-            if ch == "[":
+            if ch in "[(":
                 paren_stack.append(ch)
-            elif ch == "]":
+            elif ch in ")]":
                 # As a lexer we tolerate unmatched parens (which lead to parse
                 # errors anyway), but keep track of the matching ones.
                 if paren_stack and paren_stack[-1] == open_parens[ch]:
@@ -688,7 +741,7 @@ def lex_heading(action):
             rol.consume()
             continue
 
-        if ch in ('"', "'"):
+        if ch in "'\"":
             open_quote = ch
             start_lineno, start_column = rol.lineno, rol.column
             rol.consume()
