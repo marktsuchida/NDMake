@@ -7,6 +7,7 @@ from ndmake import debug
 dprint = debug.dprint_factory(__name__)
 dprint_line = debug.dprint_factory(__name__, "line")
 dprint_string = debug.dprint_factory(__name__, "string")
+dprint_expression = debug.dprint_factory(__name__, "expression")
 dprint_indented = debug.dprint_factory(__name__, "indented")
 dprint_token = debug.dprint_factory(__name__, "token")
 dprint_entity = debug.dprint_factory(__name__, "entity")
@@ -36,7 +37,7 @@ def read_ndmakefile(file, filename=None):
 
     def lexer_action(token):
         dprint_token("token", token)
-        parser.send(token)
+        return parser.send(token)
 
     lexer = lex(lexer_action)
 
@@ -108,6 +109,9 @@ class Punctuation(Token): pass
 class String(Token):
     def __init__(self, lineno, column, text):
         super().__init__(lineno, column, text, display="<string>")
+class Expression(Token):
+    def __init__(self, lineno, column, text):
+        super().__init__(lineno, column, text, display="<expression>")
 class EndOfHeading(Token):
     def __init__(self, lineno, column):
         super().__init__(lineno, column, None, display="<eol>")
@@ -219,6 +223,37 @@ def parse_defs(action, token):
         entries["defs"] = text
 
     action("global", next_global_entity_name(), entries)
+    return token
+
+
+@subcoroutine
+def parse_set(action, token):
+    # "set" Identifier "=" Expression EndOfHeading
+    entries = {}
+
+    token = yield
+    if not isinstance(token, Identifier):
+        raise ExpectedGotError("name", token)
+    name = token.text
+
+    token = yield
+    if not token.is_punctuation("="):
+        raise ExpectedGotError("`='", token)
+
+    token = yield "expression"
+    if not isinstance(token, Expression):
+        raise ExpectedGotError("expression", token)
+    entries["set"] = token.text
+
+    token = yield
+    if not isinstance(token, EndOfHeading):
+        raise ExpectedGotError("eol", token)
+
+    token = yield
+    if isinstance(token, IndentedText):
+        raise ExpectedGotError("keyword or eof", token)
+
+    action("global", name, entries)
     return token
 
 
@@ -548,40 +583,6 @@ def parse_optional_indented_text(token):
 
 
 #
-# Definitions for lexer
-#
-
-hspace = " \t"
-comment = "#"
-str_escapes = {
-               "\n": "",
-               "\\": "\\",
-               "'": "'",
-               '"': '"',
-               "a": "\a",
-               "b": "\b",
-               "f": "\f",
-               "n": "\n",
-               "r": "\r",
-               "t": "\t",
-               "v": "\v",
-              }
-keywords = [
-            "defs",
-            "macro",
-            "data",
-            "compute",
-            "values",
-            "range",
-            "slice",
-            "compute_values",
-            "compute_range",
-            "compute_slice",
-            "data_values",
-           ]
-
-
-#
 # Lexer
 #
 
@@ -592,7 +593,11 @@ keywords = [
 # lexer.close()
 
 # In some cases, action(token) may return control keywords instructing the
-# lexer to switch modes.
+# lexer to switch modes. Currently, the only cases is "expression" in response
+# to a Punctuation("=").
+
+hspace = " \t"
+
 
 class RestOfLine:
     # A representation of the unconsumed portion of the current line.
@@ -621,11 +626,11 @@ class RestOfLine:
         return not self.line.strip()
 
     def is_comment(self):
-        return self.line.lstrip().startswith(comment)
+        return self.line.lstrip().startswith("#")
 
     def is_empty_or_comment(self):
         s = self.line.strip()
-        if not s or s.startswith(comment):
+        if not s or s.startswith("#"):
             return True
         return False
 
@@ -695,6 +700,11 @@ def lex_heading(action, rol):
                 if paren_stack and ch == paren_stack[-1]:
                     paren_stack.pop()
             rol.consume()
+
+            if ch == "=" and ctrl == "expression":
+                rol = yield from lex_expression(action, rol)
+                break
+
             continue
 
         if re.match("[A-Za-z_]", ch):
@@ -721,6 +731,64 @@ def lex_heading(action, rol):
     action(EndOfHeading(rol.lineno, rol.column))
 
     rol = yield
+    return rol
+
+
+@subcoroutine
+def lex_expression(action, rol):
+    # A Python-style expression. Can span newlines that occur within
+    # parentheses and triple-quoted strings. Newlines can also be escaped with
+    # a backslash.
+    start_lineno, start_column = rol.lineno, rol.column
+    chunks = []
+    paren_stack = []
+    while True:
+        if paren_stack:
+            try:
+                while rol.is_empty_or_comment():
+                    rol = yield
+                    chunks.append("\n")
+                    dprint_expression("epxression chunk", chunks[-1])
+            except GeneratorExit:
+                break
+        elif not len(rol):
+            break
+
+        m = rol.match("[^\"\'\\\\({[\\]})]+")
+        if m:
+            chunks.append(rol.consume(m.end()))
+            dprint_expression("epxression chunk", chunks[-1])
+            continue
+
+        ch = rol.peek()
+        if ch in "{[(":
+            chunks.append(rol.consume())
+            dprint_expression("epxression chunk", chunks[-1])
+            paren_stack.append({"{": "}", "[": "]", "(": ")"}[ch])
+            continue
+
+        if ch in ")]}":
+            chunks.append(rol.consume())
+            dprint_expression("epxression chunk", chunks[-1])
+            if paren_stack and ch == paren_stack[-1]:
+                paren_stack.pop()
+            continue
+
+        if ch in "'\"":
+            rol = yield from lex_quoted_string(lambda s: chunks.append(s),
+                                               rol, raw=True)
+            dprint_expression("epxression chunk", chunks[-1])
+            continue
+
+        if ch == "\\" and len(rol) == 1:
+            try:
+                rol = yield
+            except GeneratorExit:
+                raise SyntaxError("line continuation at end of input",
+                                  rol.lineno, rol.column)
+            continue
+
+    action(Expression(start_lineno, start_column, "".join(chunks)))
     return rol
 
 
@@ -754,6 +822,20 @@ def lex_indented_lines(action, rol):
 
 _qualified_word_pattern = \
         re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
+_keywords = [
+            "defs",
+            "set",
+            "macro",
+            "data",
+            "compute",
+            "values",
+            "range",
+            "slice",
+            "compute_values",
+            "compute_range",
+            "compute_slice",
+            "data_values",
+           ]
 @subcoroutine
 def lex_word(action, rol):
     m = rol.match(_qualified_word_pattern)
@@ -761,7 +843,7 @@ def lex_word(action, rol):
     word = rol.consume(m.end())
     if m.group(1): # Contains `.'
         action(QualifiedIdentifier(rol.lineno, rol.column, word))
-    elif word in keywords:
+    elif word in _keywords:
         action(Keyword(rol.lineno, rol.column, word))
     else:
         action(Identifier(rol.lineno, rol.column, word))
@@ -770,18 +852,23 @@ def lex_word(action, rol):
 
 
 @subcoroutine
-def lex_quoted_string(action, rol):
+def lex_quoted_string(action, rol, raw=False):
     start_lineno, start_column = rol.lineno, rol.column
+    chunks = []
+
     quote_char = rol.consume()
     assert quote_char in ("'", '"')
+    if raw:
+        chunks.append(quote_char)
 
     triple_quote = False
-    if rol.peek(2) == quote_char + quote_char:
+    if rol.peek(2) == quote_char * 2:
         rol.consume(2)
         triple_quote = True
+        if raw:
+            chunks.append(quote_char * 2)
 
     # Now we are just after the opening quote.
-    chunks = []
     while True:
         while not len(rol):
             if not triple_quote:
@@ -803,35 +890,61 @@ def lex_quoted_string(action, rol):
         if ch == quote_char:
             if not triple_quote:
                 rol.consume()
+                if raw:
+                    chunks.append(quote_char)
                 break
             elif rol.peek(3) == quote_char * 3:
                 rol.consume(3)
+                if raw:
+                    chunks.append(quote_char * 3)
                 break
 
         if ch == "\\":
-            chunks.append(get_string_escape(rol))
+            chunks.append(get_string_escape(rol, raw=raw))
             continue
 
         chunks.append(rol.consume()) # A non-triple quote.
 
-    dprint_string("string chunks", chunks)
-    action(String(start_lineno, start_column, "".join(chunks)))
+    if raw:
+        dprint_string("raw string chunks", chunks)
+        action("".join(chunks))
+    else:
+        dprint_string("string chunks", chunks)
+        action(String(start_lineno, start_column, "".join(chunks)))
+
     return rol
 
 
-def get_string_escape(rol):
+_str_escapes = {
+               "\n": "",
+               "\\": "\\",
+               "'": "'",
+               '"': '"',
+               "a": "\a",
+               "b": "\b",
+               "f": "\f",
+               "n": "\n",
+               "r": "\r",
+               "t": "\t",
+               "v": "\v",
+              }
+def get_string_escape(rol, raw=False):
     assert rol.consume == "\\"
     ch = rol.peek()
-    if ch in str_escapes:
-        return str_escapes[rol.consume()]
+    if ch in _str_escapes:
+        if raw:
+            return "\\" + ch
+        return _str_escapes[rol.consume()]
     if ch and ch in "01234567xuU":
+        if raw:
+            return "\\" + get_unicode_escape(rol, raw=True)
         return get_unicode_escape(rol)
     # Otherwise, not an escape.
     # Leave peeked ch unconsumed.
     return "\\"
 
 
-def get_unicode_escape(rol):
+def get_unicode_escape(rol, raw=False):
     # rol should be just after the backslash.
     escape_start_column = rol.column
     ch = rol.peek()
@@ -853,6 +966,9 @@ def get_unicode_escape(rol):
         digits = ""
         while len(rol) and rol.peek() in "01234567" and len(digits) <= 3:
             digits += rol.consume()
+
+    if raw:
+        return escape_ch + digits
 
     try:
         code = int(digits, base)

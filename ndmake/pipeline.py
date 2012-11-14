@@ -81,11 +81,12 @@ class Pipeline:
                          format(name))
 
     def _prepare_global_entity(self, entity):
-        if "macro" in entity.entries:
+        if "set" in entity.entries or "macro" in entity.entries:
             if entity.name is None:
-                raise ValueError("missing macro name")
+                raise ValueError("missing variable or macro name")
             elif not self._check_identifier(entity.name):
-                raise ValueError("invalid macro name: {}".format(entity.name))
+                raise ValueError("invalid variable or macro name: {}".
+                                 format(entity.name))
         if entity.name is None: # Allowed for global entity with "defs".
             entity = Entity(entity.kind, "<default>", entity.entries)
         return entity
@@ -342,7 +343,7 @@ class Pipeline:
         _, name, entries = entity
 
         mode = None
-        mode_keys = ("defs", "macro")
+        mode_keys = ("defs", "set", "macro")
         for key in mode_keys:
             if key in entries:
                 if mode is not None:
@@ -354,7 +355,12 @@ class Pipeline:
                            format(modes=or_join(mode_keys)))
 
         if mode == "defs":
-            graph.template_environment.append_global_defs(entries["defs"])
+            source = entries["defs"]
+
+        elif mode == "set":
+            expression = entries["set"]
+            source = "{{% set {name} ={expr} %}}".format(name=name,
+                                                         expr=expression)
 
         elif mode == "macro":
             params = entries.get("params", ())
@@ -363,7 +369,8 @@ class Pipeline:
                                 format(name=name, params=", ".join(params)),
                                 text,
                                 "{%- endmacro %}"))
-            graph.template_environment.append_global_defs(source)
+
+        graph.template_environment.append_global_defs(source)
 
 
     def _instantiate_dimension_or_domain_entity(self, graph, entity):
