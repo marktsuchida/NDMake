@@ -197,35 +197,6 @@ def parse(action):
         raise ExpectedGotError("keyword or eof", token)
 
 
-def global_entity_namer():
-    for i in itertools.count(0):
-        yield "global_{:d}".format(i)
-_global_entity_namer = global_entity_namer()
-next_global_entity_name = lambda: next(_global_entity_namer)
-
-
-@subcoroutine
-def parse_defs(action, token):
-    # "defs" {":"}? EndOfHeading {IndentedText}?
-    entries = {}
-
-    expected = "`:' or eol"
-    token = yield
-    if token.is_punctuation(":"):
-        expected = "eol"
-        token = yield
-    if not isinstance(token, EndOfHeading):
-        raise ExpectedGotError(expected, token)
-
-    token = yield
-    text, token = yield from parse_optional_indented_text(token)
-    if text:
-        entries["defs"] = text
-
-    action("global", next_global_entity_name(), entries)
-    return token
-
-
 @subcoroutine
 def parse_set(action, token):
     # "set" Identifier "=" Expression EndOfHeading
@@ -823,7 +794,6 @@ def lex_indented_lines(action, rol):
 _qualified_word_pattern = \
         re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
 _keywords = [
-            "defs",
             "set",
             "macro",
             "data",

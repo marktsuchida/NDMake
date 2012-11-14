@@ -81,14 +81,11 @@ class Pipeline:
                          format(name))
 
     def _prepare_global_entity(self, entity):
-        if "set" in entity.entries or "macro" in entity.entries:
-            if entity.name is None:
-                raise ValueError("missing variable or macro name")
-            elif not self._check_identifier(entity.name):
-                raise ValueError("invalid variable or macro name: {}".
-                                 format(entity.name))
-        if entity.name is None: # Allowed for global entity with "defs".
-            entity = Entity(entity.kind, "<default>", entity.entries)
+        if entity.name is None:
+            raise ValueError("missing variable or macro name")
+        elif not self._check_identifier(entity.name):
+            raise ValueError("invalid variable or macro name: {}".
+                             format(entity.name))
         return entity
 
     def _process_global_entity(self, entity):
@@ -343,7 +340,7 @@ class Pipeline:
         _, name, entries = entity
 
         mode = None
-        mode_keys = ("defs", "set", "macro")
+        mode_keys = ("set", "macro")
         for key in mode_keys:
             if key in entries:
                 if mode is not None:
@@ -353,9 +350,6 @@ class Pipeline:
         if mode is None:
             raise KeyError("exactly one of {modes} must be given".
                            format(modes=or_join(mode_keys)))
-
-        if mode == "defs":
-            source = entries["defs"]
 
         elif mode == "set":
             expression = entries["set"]
