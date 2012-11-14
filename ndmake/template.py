@@ -85,7 +85,7 @@ class Template:
         for param in params:
             if param not in dict_ and param not in self.environment.globals:
                 dprint("rendering " + self.name,
-                       "source: \"\"\"{}\"\"\",".format(self.source),
+                       "source: {},".format(repr(self.source)),
                        "dict:", str(dict_))
                 raise KeyError("undefined template variable: {}".format(param))
 
@@ -93,14 +93,14 @@ class Template:
         try:
             rendition = jinja2_tmpl.render(dict_)
         except Exception as e:
-            raise ValueError("template {t} (source: \"\"\"{s}\"\"\", "
+            raise ValueError("template {t} (source: {s}, "
                              "dict: {d}) could not be rendered: {e}".
-                             format(t=self.name, s=self.source,
+                             format(t=self.name, s=repr(self.source),
                                     d=dict_, e=e))
 
         dprint("rendered " + self.name,
-               "source: \"\"\"{}\"\"\",".format(self.source),
+               "source: {},".format(repr(self.source)),
                "dict:", str(dict_) + ",",
-               "result: \"\"\"{}\"\"\"".format(rendition))
+               "result: {}".format(repr(rendition)))
         return rendition
 

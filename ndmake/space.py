@@ -473,11 +473,11 @@ class Element:
                   for extent in self.space.extents)
         return "<Element [{}]>".format(", ".join(coords))
 
-    def as_dict(self):
-        return dict((dim.name, self[dim]) for dim in self.space.dimensions)
-
     def render_template(self, template, *, extra_names={}):
-        dict_ = self.as_dict().copy()
+        dict_ = dict((dim.name,
+                      (("{:" + dim.default_format + "}").format(self[dim])
+                       if dim.default_format else self[dim]))
+                     for dim in self.space.dimensions)
         dict_.update(extra_names)
         dict_["__path__"] = files.element_path(self)
         rendition = template.render(dict_)
