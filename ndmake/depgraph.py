@@ -789,6 +789,12 @@ class DatasetNameProxy:
     def __str__(self):
         return self.__quoted_filenames(self.__default_element)
 
+    def __hash__(self):
+        return hash(str(self))
+
+    def __eq__(self, other):
+        return str(self) == other
+
     def __call__(self, **kwargs):
         # Override and/or extend the default element with the kwargs.
         assigned_extents = []
