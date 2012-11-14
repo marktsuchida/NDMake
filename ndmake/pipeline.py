@@ -33,14 +33,14 @@ def or_join(items, op="or"):
 
 
 Entity = collections.namedtuple("Entity", ("kind", "name", "entries"))
-entity_kinds = {"global", "dimension", "subdomain", "dataset", "compute"}
+entity_kinds = {"var", "macro", "dimension", "subdomain", "dataset", "compute"}
 
 
 class Pipeline:
     def __init__(self):
         self.entities = {} # (kind, name) -> Entity
         self.edges = set() # ((kind, name), (kind, name))
-        self.last_global_entity_name = None
+        self.last_global_entity = None
 
         self._sorted_keys = None
 
@@ -80,21 +80,39 @@ class Pipeline:
         raise ValueError("invalid dimension or subdomain name: {}".
                          format(name))
 
-    def _prepare_global_entity(self, entity):
+    def _prepare_var_entity(self, entity):
         if entity.name is None:
-            raise ValueError("missing variable or macro name")
+            raise ValueError("missing variable name")
         elif not self._check_identifier(entity.name):
-            raise ValueError("invalid variable or macro name: {}".
+            raise ValueError("invalid variable name: {}".
                              format(entity.name))
         return entity
 
-    def _process_global_entity(self, entity):
-        # Make dependent on previous `global' entity so that order is
+    def _process_var_entity(self, entity):
+        # Make dependent on previous global name entity so that order is
         # preserved in the upcoming topological sort.
-        if self.last_global_entity_name is not None:
-            self._add_edge(("global", self.last_global_entity_name),
-                           ("global", entity.name))
-        self.last_global_entity_name = entity.name
+        if self.last_global_entity is not None:
+            self._add_edge((self.last_global_entity.kind,
+                            self.last_global_entity.name),
+                           ("var", entity.name))
+        self.last_global_entity = entity
+
+    def _prepare_macro_entity(self, entity):
+        if entity.name is None:
+            raise ValueError("missing macro name")
+        elif not self._check_identifier(entity.name):
+            raise ValueError("invalid macro name: {}".
+                             format(entity.name))
+        return entity
+
+    def _process_macro_entity(self, entity):
+        # Make dependent on previous global name entity so that order is
+        # preserved in the upcoming topological sort.
+        if self.last_global_entity is not None:
+            self._add_edge((self.last_global_entity.kind,
+                            self.last_global_entity.name),
+                           ("macro", entity.name))
+        self.last_global_entity = entity
 
     def _prepare_dimension_entity(self, entity):
         if not self._check_identifier(entity.name):
@@ -287,7 +305,7 @@ class Pipeline:
                 elif kind in ("dimension", "subdomain"):
                     shape = "box"
                     color = "red"
-                elif kind == "global":
+                elif kind in ("var", "macro"):
                     color = "darkgreen"
                 fprint("{} [label=\"{}\" shape=\"{}\" color=\"{}\"];".
                        format(vertex_id(entity), label, shape, color))
@@ -300,7 +318,8 @@ class Pipeline:
                     color = "gray"
                 elif parent_kind in dim_or_dom and child_kind in dim_or_dom:
                     color = "red"
-                elif parent_kind == "global" or child_kind == "global":
+                elif (parent_kind in ("var", "macro") or
+                      child_kind in ("var", "macro")):
                     color = "darkgreen"
                 fprint("{} -> {} [color=\"{}\"];".
                        format(vertex_id(parent), vertex_id(child), color))
@@ -336,34 +355,19 @@ class Pipeline:
         dprint("adding edge", vertex1, "to", vertex2)
         graph.add_edge(vertex1, vertex2)
 
-    def _instantiate_global_entity(self, graph, entity):
-        _, name, entries = entity
+    def _instantiate_var_entity(self, graph, entity):
+        expression = entity.entries["value"]
+        source = "{{% set {name} ={expr} %}}".format(name=entity.name,
+                                                     expr=expression)
+        graph.template_environment.append_global_defs(source)
 
-        mode = None
-        mode_keys = ("set", "macro")
-        for key in mode_keys:
-            if key in entries:
-                if mode is not None:
-                    raise KeyError("exactly one of {modes} must be given".
-                                   format(modes=or_join(mode_keys)))
-                mode = key
-        if mode is None:
-            raise KeyError("exactly one of {modes} must be given".
-                           format(modes=or_join(mode_keys)))
-
-        elif mode == "set":
-            expression = entries["set"]
-            source = "{{% set {name} ={expr} %}}".format(name=name,
-                                                         expr=expression)
-
-        elif mode == "macro":
-            params = entries.get("params", ())
-            text = entries.get("macro", "")
-            source = "\n".join(("{{% macro {name}({params}) -%}}".
-                                format(name=name, params=", ".join(params)),
-                                text,
-                                "{%- endmacro %}"))
-
+    def _instantiate_macro_entity(self, graph, entity):
+        params = entity.entries.get("params", ())
+        text = entity.entries.get("definition", "")
+        source = "\n".join(("{{% macro {name}({params}) -%}}".
+                            format(name=entity.name, params=", ".join(params)),
+                            text,
+                            "{%- endmacro %}"))
         graph.template_environment.append_global_defs(source)
 
 

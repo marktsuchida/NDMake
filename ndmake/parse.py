@@ -214,7 +214,7 @@ def parse_set(action, token):
     token = yield "expression"
     if not isinstance(token, Expression):
         raise ExpectedGotError("expression", token)
-    entries["set"] = token.text
+    entries["value"] = token.text
 
     token = yield
     if not isinstance(token, EndOfHeading):
@@ -224,7 +224,7 @@ def parse_set(action, token):
     if isinstance(token, IndentedText):
         raise ExpectedGotError("keyword or eof", token)
 
-    action("global", name, entries)
+    action("var", name, entries)
     return token
 
 
@@ -272,9 +272,9 @@ def parse_macro(action, token):
     token = yield
     text, token = yield from parse_optional_indented_text(token)
     if text:
-        entries["macro"] = text
+        entries["definition"] = text
 
-    action("global", name, entries)
+    action("macro", name, entries)
     return token
 
 
@@ -759,7 +759,9 @@ def lex_expression(action, rol):
                                   rol.lineno, rol.column)
             continue
 
-    action(Expression(start_lineno, start_column, "".join(chunks)))
+    expression = "".join(chunks)
+    if expression.strip():
+        action(Expression(start_lineno, start_column, expression))
     return rol
 
 
