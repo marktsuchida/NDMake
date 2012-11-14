@@ -382,7 +382,9 @@ class Dataset(Vertex):
         return "data {}".format(self.name)
 
     def render_filename(self, element):
-        return element.render_template(self.filename_template)
+        dict_ = {"__name__": self.name}
+        return element.render_template(self.filename_template,
+                                       extra_names=dict_)
 
     def read_mtimes(self, element):
         return mtime.get(self.render_filename(element))
@@ -527,8 +529,10 @@ class Computation(Vertex):
                                     if hasattr(v, "name_proxy"))
         # Note: filename-surveyed output datasets' names are not available in
         # the command template.
+        dict_ = dataset_name_proxies
+        dict_["__name__"] = self.name
         return element.render_template(self.command_template,
-                                       extra_names=dataset_name_proxies)
+                                       extra_names=dict_)
 
     def is_up_to_date(self, graph, element):
         oldest_child_mtime, _ = mtime.extrema(child.mtimes[element]
@@ -729,10 +733,11 @@ class Survey(Vertex):
         dataset_name_proxies = dict((parent.name, parent.name_proxy(element))
                                     for parent in graph.parents_of(self)
                                     if isinstance(parent, Dataset))
+        dict_ = dataset_name_proxies
+        dict_["__name__"] = self.name
 
         self.results[element] = self.surveyer.run_survey(self, element,
-                                                         dataset_name_proxies,
-                                                         options)
+                                                         dict_, options)
         return
         yield
 
