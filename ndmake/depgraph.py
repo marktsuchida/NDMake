@@ -20,6 +20,7 @@ dprint = debug.dprint_factory(__name__)
 dprint_traverse = debug.dprint_factory(__name__, "traverse")
 dprint_update = debug.dprint_factory(__name__, "update")
 dprint_undemarcated = debug.dprint_factory(__name__, "undemarcated")
+dprint_unlink = debug.dprint_factory(__name__, "unlink")
 
 
 #
@@ -380,9 +381,11 @@ class Dataset(Vertex):
     def __str__(self):
         return "data {}".format(self.name)
 
+    def render_filename(self, element):
+        return element.render_template(self.filename_template)
+
     def read_mtimes(self, element):
-        filename = element.render_template(self.filename_template)
-        return mtime.get(filename)
+        return mtime.get(self.render_filename(element))
 
     @dispatch.tasklet
     def update_all_elements(self, graph, options):
@@ -420,7 +423,7 @@ class Dataset(Vertex):
             # There are missing files.
             # Unless this is a dry run or a keep-going run, we raise an error.
             # XXX For now, we raise an error unconditionally.
-            filename = element.render_template(self.filename_template)
+            filename = self.render_filename(element)
             parents = graph.parents_of(self)
             for parent in parents:
                 if isinstance(parent, Computation):
@@ -454,7 +457,8 @@ class Dataset(Vertex):
     def delete_files(self, element):
         for full_element, is_full in self.scope.iterate(element):
             assert is_full
-            filename = full_element.render_template(self.filename_template)
+            filename = self.render_filename(full_element)
+            dprint_unlink("deleting", filename)
             if os.path.exists(filename):
                 os.unlink(filename)
         del self.mtimes[element]
@@ -462,8 +466,7 @@ class Dataset(Vertex):
     def dirname(self, element):
         element = self.scope.canonicalized_element(element)
         if self.scope.is_full_element(element):
-            filename = element.render_template(self.filename_template)
-            return os.path.dirname(filename)
+            return os.path.dirname(self.render_filename(element))
         else:
             # Given a partial element, we still want to be able to create
             # directories whose names are fixed. There might be a better way
@@ -480,10 +483,8 @@ class Dataset(Vertex):
                     coords2[extent.dimension] = extent.value_type(654321)
             full_element1 = space.Element(self.scope, coords1)
             full_element2 = space.Element(self.scope, coords2)
-            filename1 = full_element1.render_template(self.filename_template)
-            filename2 = full_element2.render_template(self.filename_template)
-            dirname1 = os.path.dirname(filename1)
-            dirname2 = os.path.dirname(filename2)
+            dirname1 = os.path.dirname(self.render_filename(full_element1))
+            dirname2 = os.path.dirname(self.render_filename(full_element2))
             while dirname1 != dirname2:
                 dirname1 = os.path.dirname(dirname1)
                 dirname2 = os.path.dirname(dirname2)
@@ -517,6 +518,17 @@ class Computation(Vertex):
 
     def __str__(self):
         return "compute {}".format(self.name)
+
+    def render_command(self, graph, element):
+        # Bind input and output dataset names.
+        io_vertices = (graph.parents_of(self) + graph.children_of(self))
+        dataset_name_proxies = dict((v.name, v.name_proxy(element))
+                                    for v in io_vertices
+                                    if hasattr(v, "name_proxy"))
+        # Note: filename-surveyed output datasets' names are not available in
+        # the command template.
+        return element.render_template(self.command_template,
+                                       extra_names=dataset_name_proxies)
 
     def is_up_to_date(self, graph, element):
         oldest_child_mtime, _ = mtime.extrema(child.mtimes[element]
@@ -584,16 +596,7 @@ class Computation(Vertex):
 
     @dispatch.subtasklet
     def run_command(self, graph, element, options):
-        # Bind input and output dataset names.
-        io_vertices = (graph.parents_of(self) + graph.children_of(self))
-        dataset_name_proxies = dict((v.name, v.name_proxy(element))
-                                    for v in io_vertices
-                                    if hasattr(v, "name_proxy"))
-        # Note: filename-surveyed output datasets' names are not available in
-        # the command template.
-
-        command = element.render_template(self.command_template,
-                                          extra_names=dataset_name_proxies)
+        command = self.render_command(graph, element)
         print_command = options.get("print_executed_commands", False)
 
         def task_func():
@@ -771,15 +774,13 @@ class DatasetNameProxy:
 
     def __filename_list(self, element):
         if self.__dataset.scope.is_full_element(element):
-            return [element.render_template(self.__dataset.filename_template)]
+            return [self.__dataset.render_filename(element)]
 
         # We have a partial element.
-        filenames = []
-        for full_element, is_full in self.__dataset.scope.iterate(element):
-            assert is_full
-            filenames.append(full_element.
-                             render_template(self.__dataset.filename_template))
-        return filenames
+        return list(self.__dataset.render_filename(full_element)
+                    for full_element, is_full
+                    in self.__dataset.scope.iterate(element)
+                    if is_full)
 
     def __quoted_filenames(self, element):
         return " ".join(shlex.quote(name)

@@ -14,6 +14,7 @@ dprint = debug.dprint_factory(__name__)
 dprint_iter = debug.dprint_factory(__name__, "iter")
 dprint_extent = debug.dprint_factory(__name__, "extent")
 dprint_cache = debug.dprint_factory(__name__, "cache")
+dprint_unlink = debug.dprint_factory(__name__, "unlink")
 
 
 #
@@ -512,6 +513,7 @@ class Surveyer:
     def delete_files(self, element, delete_surveyed_files=False):
         assert not delete_surveyed_files
         filename = self.cache_file(element)
+        dprint_unlink("deleting", filename)
         if os.path.exists(filename):
             os.unlink(filename)
 
@@ -634,6 +636,7 @@ class FilenameSurveyer(Surveyer):
             else:
                 for filename in (shlex.split(line)[0]
                                  for line in roster_text.splitlines()):
+                    dprint_unlink("deleting", filename)
                     if os.path.exists(filename):
                         os.unlink(filename)
         super().delete_files(element)
@@ -828,9 +831,9 @@ class Cache:
             return
         if not hasattr(self, "persistence_filename"):
             return
+        dprint_unlink("deleting", self.persistence_filename)
         if os.path.exists(self.persistence_filename):
             dprint_cache("Cache.delete_file", self.persistence_filename)
             os.unlink(self.persistence_filename)
         self.has_deleted_file = True
-
 
