@@ -5,6 +5,7 @@ import shlex
 from ndmake import debug
 
 dprint = debug.dprint_factory(__name__)
+dprint_globals = debug.dprint_factory(__name__, "globals")
 
 # Notes.
 # - There was the idea of a list-template. It might be possible to list-ify
@@ -57,6 +58,7 @@ class Environment:
         for name in dir(tmpl_module):
             if not name.startswith("_"):
                 self.globals[name] = getattr(tmpl_module, name)
+                dprint_globals("added global", name, self.globals[name])
         # Invalidate the existing environment.
         self._jinja2_environment = None
 
@@ -83,10 +85,12 @@ class Template:
         # Check that all variables are defined (to simplify error messages).
         params = self.parameters
         for param in params:
-            if param not in dict_ and param not in self.environment.globals:
+            globals = self.environment.jinja2_environment.globals
+            if param not in dict_ and param not in globals:
                 dprint("rendering " + self.name,
                        "source: {},".format(repr(self.source)),
                        "dict:", str(dict_))
+                dprint_globals("globals", self.environment.globals)
                 raise KeyError("undefined template variable: {}".format(param))
 
         jinja2_tmpl = self.environment.get_template(self.name)
