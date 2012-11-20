@@ -1,3 +1,4 @@
+import errno
 import functools
 import itertools
 import multiprocessing
@@ -609,10 +610,19 @@ class Computation(Vertex):
             if print_command:
                 sys.stdout.write(command + "\n")
 
-            with subprocess.Popen(command, shell=True) as proc:
-                # TODO Capture stdout and stderr (need select.select())
-                proc.wait()
-                return proc.returncode
+            try:
+                with subprocess.Popen(command, shell=True) as proc:
+                    proc.wait()
+                    return proc.returncode
+            except OSError as e:
+                if e.errno == errno.E2BIG: # Argument list too long.
+                    # Fall back to piping to shell, which will help if the long
+                    # command is e.g. a here document.
+                    with subprocess.Popen("/bin/sh",
+                                          stdin=subprocess.PIPE) as shellproc:
+                        shellproc.communicate(command.encode())
+                        return shellproc.returncode
+                raise
 
         outputs_are_valid = False
         try:
