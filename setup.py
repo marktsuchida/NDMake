@@ -1,7 +1,7 @@
 from distutils.core import setup
 setup(
       name='ndmake',
-      version='0.1',
+      version='0.2dev',
       description='Flexible automation of iterative computation',
       author='Mark A. Tsuchida',
       author_email='mark@tsuchida.org',
