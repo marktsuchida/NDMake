@@ -12,4 +12,8 @@ for the ``ndmake`` command, but documentation for the input file (ndmakefile)
 syntax does not yet exist. Functionality may change in a backward-incompatible
 manner.
 
-NDMake is written in Python and requires Python 3.3 or greater.
+NDMake is written in Python and requires Python_ 3.3 or greater and Jinja2_ 2.6
+or greater.
+
+.. _Python: http://python.org/
+.. _Jinja2: http://jinja.pocoo.org/
