@@ -3,6 +3,7 @@ from ndmake import dispatch
 
 dprint = debug.dprint_factory(__name__)
 
+
 @dispatch.tasklet
 def scatter(trigger_chan, notification_request_chan):
     # Blocks until a message is received on trigger_chan. Once received, sends
@@ -52,7 +53,7 @@ def scatter(trigger_chan, notification_request_chan):
 @dispatch.tasklet
 def gather(trigger_chans, signal_combiner=None):
     trigger_chan_set = set(trigger_chans)
-    if trigger_chan_set is trigger_chans: # Just in case we were given a set.
+    if trigger_chan_set is trigger_chans:  # Just in case we were given a set.
         trigger_chan_set = trigger_chan_set.copy()
 
     yield dispatch.SetDaemon()
@@ -78,4 +79,3 @@ def gather(trigger_chans, signal_combiner=None):
     if signal_combiner is None:
         signal_combiner = lambda xs: xs[0] if xs else None
     return signal_combiner(messages)
-

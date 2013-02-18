@@ -3,11 +3,14 @@ import time
 
 from ndmake import debug
 
+
 _dprint_mtime = debug.dprint_factory(__name__, "mtime")
+
 
 def strfmtime(mtime):
     return (time.strftime("%Y%m%dT%H%M%S", time.localtime(mtime)) +
             ".{:04d}".format(round(mtime % 1 * 10000)))
+
 
 def dprint_mtime(mtime, *args):
     # Wrapper to avoid strftime() call when not printing.
@@ -16,7 +19,6 @@ def dprint_mtime(mtime, *args):
             _dprint_mtime("mtime", strfmtime(mtime), *args)
         else:
             _dprint_mtime("mtime", mtime, *args)
-
 
 
 # A constant representing a "valid" time-since-epoch value.
@@ -42,7 +44,7 @@ def get(filename):
     except FileNotFoundError:
         dprint_mtime("missing", filename)
         return 0, MAX_TIME
-    return mtime, mtime # oldest, newest
+    return mtime, mtime  # oldest, newest
 
 
 def extrema(iter):
@@ -68,4 +70,3 @@ def reader(s):
 def writer(mtimes):
     # For use as writer for space.Cache persistence.
     return "{:f} {:f}".format(*mtimes)
-

@@ -2,7 +2,8 @@ import errno
 import functools
 import itertools
 import multiprocessing
-import os, os.path
+import os
+import os.path
 import shlex
 import subprocess
 import sys
@@ -28,9 +29,16 @@ dprint_unlink = debug.dprint_factory(__name__, "unlink")
 # Exceptions
 #
 
-class UpdateException(Exception): pass
-class MissingFileException(UpdateException): pass
-class CalledProcessError(UpdateException): pass
+class UpdateException(Exception):
+    pass
+
+
+class MissingFileException(UpdateException):
+    pass
+
+
+class CalledProcessError(UpdateException):
+    pass
 
 
 #
@@ -48,16 +56,16 @@ class Graph:
         self._vertex_id_generator = itertools.count(0)
 
         # Vertices.
-        self._vertex_id_map = {} # Vertex -> id
-        self._id_vertex_map = {} # id -> Vertex
-        self._name_id_map = {} # (name, type_) -> id
+        self._vertex_id_map = {}  # Vertex -> id
+        self._id_vertex_map = {}  # id -> Vertex
+        self._name_id_map = {}  # (name, type_) -> id
 
         # Edges.
-        self._parents = {} # id -> set(ids)
-        self._children = {} # id -> set(ids)
+        self._parents = {}  # id -> set(ids)
+        self._children = {}  # id -> set(ids)
 
         # Dimensions.
-        self.dimensions = {} # name -> Dimension
+        self.dimensions = {}  # name -> Dimension
 
         # Templates.
         self.template_environment = template.Environment()
@@ -204,7 +212,7 @@ class Graph:
             yield dispatch.Spawn(vertex.update(self, options))
 
         # Wait for completion.
-        notification_chans = [] # Can't use generator expression here.
+        notification_chans = []  # Can't use generator expression here.
         for vertex in vertices:
             notification_chan = yield from vertex.get_notification_chan()
             notification_chans.append(notification_chan)
@@ -243,8 +251,8 @@ class Vertex:
         self.name = name
         self.scope = scope
 
-        self.update_started = False # Prevent duplicate update.
-        self.notification_request_chan = None # Request chan for mux.gather.
+        self.update_started = False  # Prevent duplicate update.
+        self.notification_request_chan = None  # Request chan for mux.gather.
 
     def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
@@ -284,7 +292,7 @@ class Vertex:
             if len(completion_chans) > 11:
                 chunk_complete_chan = yield dispatch.MakeChannel()
                 yield dispatch.Spawn(mux.gather(completion_chans),
-                                     return_chan = chunk_complete_chan)
+                                     return_chan=chunk_complete_chan)
                 completion_chans = [chunk_complete_chan]
 
         all_complete_chan = yield dispatch.MakeChannel()
@@ -615,7 +623,7 @@ class Computation(Vertex):
                     proc.wait()
                     return proc.returncode
             except OSError as e:
-                if e.errno == errno.E2BIG: # Argument list too long.
+                if e.errno == errno.E2BIG:  # Argument list too long.
                     # Fall back to piping to shell, which will help if the long
                     # command is e.g. a here document.
                     with subprocess.Popen("/bin/sh",
@@ -818,7 +826,7 @@ class DatasetNameProxy:
             if extent.dimension in self.__default_element.space.dimensions:
                 assigned_extents.append(extent)
                 coords[extent.dimension] = \
-                        self.__default_element[extent.dimension]
+                    self.__default_element[extent.dimension]
             if extent.dimension.name in kwargs:
                 if extent not in assigned_extents:
                     assigned_extents.append(extent)
@@ -826,4 +834,3 @@ class DatasetNameProxy:
         new_element = space.Element(space.Space(assigned_extents), coords)
 
         return self.__quoted_filenames(new_element)
-

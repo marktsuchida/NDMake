@@ -1,17 +1,21 @@
-import jinja2, jinja2.meta, jinja2.sandbox
+import jinja2
+import jinja2.meta
+import jinja2.sandbox
 import re
 import shlex
 
 from ndmake import debug
 
+
 dprint = debug.dprint_factory(__name__)
 dprint_globals = debug.dprint_factory(__name__, "globals")
 
+
 class Environment:
     def __init__(self):
-        self._jinja2_environment = None # Create lazily.
-        self.sources = {} # template name -> source text
-        self.globals = {} # name -> value
+        self._jinja2_environment = None  # Create lazily.
+        self.sources = {}  # template name -> source text
+        self.globals = {}  # name -> value
 
     @property
     def jinja2_environment(self):
@@ -98,4 +102,3 @@ class Template:
                "dict:", str(dict_) + ",",
                "result: {}".format(repr(rendition)))
         return rendition
-

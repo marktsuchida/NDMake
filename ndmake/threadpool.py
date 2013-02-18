@@ -14,7 +14,8 @@ if DEBUG:
     def dprint(*args):
         print("threadpool:", *args)
 else:
-    def dprint(*args): pass
+    def dprint(*args):
+        pass
 
 
 class _PoolThread(threading.Thread):
@@ -42,9 +43,9 @@ class _PoolThread(threading.Thread):
             except queue.Empty:
                 dprint(self.name + ":", "idle")
                 self.idle_notify_method(self)
-                task = self.task_queue.get() # Block.
+                task = self.task_queue.get()  # Block.
 
-            if task is ...: # Sentinel.
+            if task is ...:  # Sentinel.
                 dprint(self.name + ":", "idle")
                 self.idle_notify_method(self)
                 break
@@ -120,21 +121,21 @@ def threadpool(task_chan, max_threads=None):
     if not max_threads:
         max_threads = multiprocessing.cpu_count()
     all_threads = []
-    finished_threads = set() # Threads that have finished their last task.
+    finished_threads = set()  # Threads that have finished their last task.
     idle_thread_chan = yield dispatch.MakeChannel()
 
     dprint("starting")
 
-    try: # On exception, we need to join all threads.
+    try:  # On exception, we need to join all threads.
 
         while True:
             thread = yield from _wait_for_thread(all_threads, max_threads,
                                                  idle_thread_chan)
 
             func, context, reply_chan, occupancy = \
-                    yield dispatch.Recv(task_chan)
+                yield dispatch.Recv(task_chan)
 
-            if func is ...: # Sentinel.
+            if func is ...:  # Sentinel.
                 finish_notify_chan = reply_chan
                 finished_threads.add(thread)
                 dprint("added to finished_threads:", thread.name)
@@ -171,11 +172,11 @@ def threadpool(task_chan, max_threads=None):
             dprint("waiting for threads to finish")
         while len(all_threads):
             thread = yield dispatch.Recv(idle_thread_chan)
-            if thread in finished_threads: # Thread terminated.
+            if thread in finished_threads:  # Thread terminated.
                 thread.join()
                 dprint("joined", thread.name)
                 all_threads.remove(thread)
-            else: # Thread finished last task.
+            else:  # Thread finished last task.
                 finished_threads.add(thread)
                 dprint("finished last task:", thread.name)
 
@@ -193,4 +194,3 @@ def threadpool(task_chan, max_threads=None):
         for thread in all_threads:
             thread.join()
             dprint("joined", thread.name)
-

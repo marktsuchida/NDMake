@@ -18,7 +18,8 @@ if DEBUG:
     def dprint(*args):
         print("dispatch: {}:".format(args[0]), *args[1:])
 else:
-    def dprint(*args): pass
+    def dprint(*args):
+        pass
 
 
 # Coding conventions
@@ -46,7 +47,7 @@ class _EditablePriorityQueue():
 
     def __init__(self):
         self._heapqueue = []
-        self._dic = {} # Keep track of queue entries.
+        self._dic = {}  # Keep track of queue entries.
         self._ordinal_generator = itertools.count(0)
 
     def __str__(self):
@@ -97,7 +98,7 @@ class _Tasklet():
         self.send_waiting_hchan = None
         self.send_waiting_ref = None
         self.recv_waiting_hchan = None
-        self.select_waiting_descs = None # list of (io, chan)
+        self.select_waiting_descs = None  # list of (io, chan)
 
     def __str__(self):
         return repr(self)
@@ -163,15 +164,15 @@ class _Channel():
     def __init__(self, kernel, cid):
         self.kernel = kernel
         self.cid = cid
-        self.message_queue = collections.deque() # (sender, ref, message)
+        self.message_queue = collections.deque()  # (sender, ref, message)
 
         self.message_ref_generator = itertools.count(1)
 
         # There is no send_queue because blocking senders are saved in
         # message_queue.
-        self.recv_queue = _OrderedSet() # tasklet
-        self.select_send_queue = _OrderedSet() # tasklet
-        self.select_recv_queue = _OrderedSet() # tasklet
+        self.recv_queue = _OrderedSet()  # tasklet
+        self.select_send_queue = _OrderedSet()  # tasklet
+        self.select_recv_queue = _OrderedSet()  # tasklet
 
     def __str__(self):
         return repr(self)
@@ -208,8 +209,8 @@ class _Channel():
             if sender is not None and sender in self.kernel.tasklets:
                 # Check that the sender is still waiting on this send.
                 if (sender.send_waiting_hchan is not None and
-                    self is sender.send_waiting_hchan._chan and
-                    ref == sender.send_waiting_ref):
+                        self is sender.send_waiting_hchan._chan and
+                        ref == sender.send_waiting_ref):
                     sender.clear_waits()
                     if sender not in self.kernel.backlog_queue:
                         self.kernel.place_in_backlog(sender)
@@ -229,10 +230,10 @@ class _Kernel():
         self.tasklets = set()
         self.channels = set()
 
-        self.nonempty_channels = _OrderedSet() # channel
-        self.select_queue = _OrderedSet() # tasklet
-        self.backlog_queue = _EditablePriorityQueue() # tasklet
-        self.async_queue = queue.Queue() # (hchan, message)
+        self.nonempty_channels = _OrderedSet()  # channel
+        self.select_queue = _OrderedSet()  # tasklet
+        self.backlog_queue = _EditablePriorityQueue()  # tasklet
+        self.async_queue = queue.Queue()  # (hchan, message)
 
         self.tid0_exited = False
 
@@ -268,8 +269,8 @@ class _Kernel():
     def new_tasklet(self, coroutine, priority, return_hchan=None):
         # Catch a common error (forgetting to in clude a `yield' in the func).
         assert isinstance(coroutine, types.GeneratorType), \
-                ("attempt to start tasklet with non-generator: {}".
-                 format(coroutine))
+            ("attempt to start tasklet with non-generator: {}".
+             format(coroutine))
         tasklet = _Tasklet(self, next(self.tid_generator), coroutine,
                            priority, return_hchan)
         self.tasklets.add(tasklet)
@@ -278,7 +279,7 @@ class _Kernel():
     def terminate(self, tasklet):
         dprint(tasklet, "terminating")
         self.tasklets.remove(tasklet)
-        tasklet.coroutine.close() # XXX Exceptions? Ignore for now.
+        tasklet.coroutine.close()  # XXX Exceptions? Ignore for now.
         tasklet.terminated = True
 
     def terminate_all(self):
@@ -294,15 +295,15 @@ class _Kernel():
         self.backlog_queue.put(tasklet, sendval, tasklet.priority)
 
     def run_tasklet(self, tasklet, sendval=None):
-        while True: # Keep running while message chain continues.
+        while True:  # Keep running while message chain continues.
             try:
                 kcall = tasklet.run(sendval)
 
-            except StopIteration as status: # Tasklet terminated successfully.
+            except StopIteration as status:  # Tasklet terminated successfully.
                 dprint(tasklet, "exited")
                 tasklet.exited = True
                 self.tasklets.remove(tasklet)
-                if tasklet.tid == 0: # Initial tasklet.
+                if tasklet.tid == 0:  # Initial tasklet.
                     self.tid0_exited = True
                     self.terminate_daemons()
 
@@ -326,7 +327,7 @@ class _Kernel():
                     dprint(tasklet, "return value discarded:", return_value)
                 break
 
-            except BaseException as e: # Tasklet terminated abnormally.
+            except BaseException as e:  # Tasklet terminated abnormally.
                 dprint(tasklet, "raised", e.__class__.__name__)
                 self.tasklets.remove(tasklet)
                 self.terminate_all()
@@ -339,7 +340,7 @@ class _Kernel():
                 else:
                     break
 
-            else: # Yielded a non-command. Yield to other tasklets.
+            else:  # Yielded a non-command. Yield to other tasklets.
                 if kcall is not None:
                     # This is a programming error.
                     warnings.warn(("tasklet {tid} yielded unrecognized value; "
@@ -412,15 +413,15 @@ class _KernelCall():
     # Abstract base class.
 
     def __call__(self, kernel, tasklet):
-        return tasklet, None # No-op.
+        return tasklet, None  # No-op.
 
 
 class Spawn(_KernelCall):
     """Start a new tasklet.
 
     Context (almost always) switches.
-    
-    Usage: yield Spawn(tasklet[, priority]) # priority = 0 by default
+
+    Usage: yield Spawn(tasklet[, priority])  # priority = 0 by default
 
     The new tasklet is scheduled to run immediately. The calling tasklet is
     placed in the backlog queue, and is resumed when there are no
@@ -495,7 +496,7 @@ class Select(_KernelCall):
 
     Context may switch.
 
-    Usage: io, hchan = yield Select(descs[, block]) # block = True by default
+    Usage: io, hchan = yield Select(descs[, block])  # block = True by default
 
     We shall call the pair (io, hchan) a descriptor if io is either
     Select.SEND or Select.RECV and hchan is a channel handle.
@@ -525,11 +526,11 @@ class Select(_KernelCall):
 
             if io == self.SEND:
                 # If a tasklet is blocking on Recv or Select(Recv) for the
-                # channel, the current channel is ready to Send. 
+                # channel, the current channel is ready to Send.
                 if len(chan.recv_queue) or len(chan.select_recv_queue):
                     return tasklet, (self.SEND, hchan)
 
-            else: # io == self.RECV:
+            else:  # io == self.RECV:
                 # If a message is available, the current channel is ready to
                 # Recv.
                 if not chan.is_empty():
@@ -562,8 +563,8 @@ class Send(_KernelCall):
     """Send message through channel.
 
     Context may switch.
-    
-    Usage: yield Send(hchan, message[, block]) # block = True by default
+
+    Usage: yield Send(hchan, message[, block])  # block = True by default
     """
 
     def __init__(self, hchan, message, block=True):
@@ -579,7 +580,7 @@ class Send(_KernelCall):
         for r_tasklet in chan.recv_queue:
             kernel.place_in_backlog(tasklet)
             r_tasklet.clear_waits()
-            return r_tasklet, self.message # Return from Recv().
+            return r_tasklet, self.message  # Return from Recv().
 
         # Otherwise, enqueue the message in the channel. The current tasklet
         # either blocks or is placed at the back of the backlog queue.
@@ -605,8 +606,8 @@ class Recv(_KernelCall):
     """Receive message from channel.
 
     Context may switch.
-    
-    Usage: message = yield Recv(hchan[, block]) # block = True by default
+
+    Usage: message = yield Recv(hchan[, block])  # block = True by default
     """
 
     def __init__(self, hchan, block=True):
@@ -618,7 +619,7 @@ class Recv(_KernelCall):
             # If a message is available, return it.
             message = self.hchan._chan.dequeue()
             dprint(self.hchan._chan, tasklet, "received", message)
-            return tasklet, message # Return from Recv().
+            return tasklet, message  # Return from Recv().
 
         except queue.Empty:
             # Otherwise, block or place in backlog.
@@ -646,7 +647,8 @@ class GetTid(_KernelCall):
     Usage: tid = yield GetTid()
     """
 
-    def __init__(self): pass
+    def __init__(self):
+        pass
 
     def __call__(self, kernel, tasklet):
         tid = tasklet.tid
@@ -663,8 +665,8 @@ class SetDaemon(_KernelCall):
 
     Context does not switch.
 
-    Usage: yield SetDaemon(flag) # or
-           yield SetDaemon() # Same as flag = True.
+    Usage: yield SetDaemon(flag)  # or
+           yield SetDaemon()  # Same as flag = True.
     """
 
     def __init__(self, make_daemon=True):
@@ -680,7 +682,7 @@ class SetDaemon(_KernelCall):
 
 class TaskletHandle():
     """A handle for the opaque tasklet object.
-    
+
     TaskletHandle objects may be passed between tasklets, via Send() or
     Spawn().
     """
@@ -696,7 +698,7 @@ class TaskletHandle():
 
 class ChannelHandle():
     """A handle for the opaque channel object.
-    
+
     ChannelHandle objects may be passed between tasklets, via Send() or
     Spawn().
     """
@@ -748,7 +750,7 @@ def tasklet(coroutine_func):
     with all other tasklets, is to be terminated.
     """
     assert inspect.isgeneratorfunction(coroutine_func), \
-            "@tasklet applied to non-generator function"
+        "@tasklet applied to non-generator function"
     return coroutine_func
 
 
@@ -756,13 +758,12 @@ def subtasklet(coroutine_func):
     """A generator function decorator indicating a tasklet subroutine.
 
     Actually returns the generator unmodified; use of this decorator is solely
-    for the purpose of annotation. 
+    for the purpose of annotation.
 
     A subtasklet is similar to a tasklet, except that it is allowed to return
     a value (via a `return' statement), and can raise exceptions to be caught
     in the calling (sub)tasklet.
     """
     assert inspect.isgeneratorfunction(coroutine_func), \
-            "@subtasklet applied to non-generator function"
+        "@subtasklet applied to non-generator function"
     return coroutine_func
-

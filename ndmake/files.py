@@ -1,5 +1,7 @@
 import urllib.parse
-import os, os.path
+import os
+import os.path
+
 
 #
 # File handling utility functions
@@ -35,4 +37,3 @@ def element_path(element):
                 value = ("{:" + format_spec + "}").format(value)
             yield "{}={}".format(name, value)
     return "/".join(components())
-

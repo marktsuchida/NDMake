@@ -1,5 +1,6 @@
 import functools
-import os, os.path
+import os
+import os.path
 import shlex
 import subprocess
 import sys
@@ -59,7 +60,7 @@ class Extent:
 
         self.name = None
         self.superextent = None
-        self.subextents = {} # name -> Extent
+        self.subextents = {}  # name -> Extent
 
         self.default_format = None
 
@@ -98,7 +99,8 @@ class Extent:
 
 
 class SequenceExtentMixin:
-    def __init__(self, *args, **kwargs): pass
+    def __init__(self, *args, **kwargs):
+        pass
 
 
 class EnumeratedExtentMixin(SequenceExtentMixin):
@@ -263,7 +265,9 @@ class Space:
     # time taken to iterate over spaces, so we memoize Space instances.
     # There are more general and sophisticated methods to memoize class
     # instances, but for now we assume that Space will not be subclassed.
-    _instances = {} # tuple(manifest_extents) -> Space
+
+    _instances = {}  # tuple(manifest_extents) -> Space
+
     def __new__(cls, manifest_extents=[]):
         key = tuple(manifest_extents)
         if key not in cls._instances:
@@ -301,7 +305,7 @@ class Space:
                         extents_to_use[dimension] = extent
                         continue
                     elif contending_extent.issubextent(extent):
-                        continue # Keep contending_extent for this dimension.
+                        continue  # Keep contending_extent for this dimension.
                     raise ValueError("cannot create space with multiple "
                                      "incompatible extents for the same "
                                      "dimension: {}".format(manifest_extents))
@@ -319,7 +323,7 @@ class Space:
         all_dims = set(extents_to_use.keys())
         implicit_dims = all_dims - manifest_dims
         sorted_extents = []
-        checked_dimensions = set() # Dimensions represented in sorted_extents.
+        checked_dimensions = set()  # Dimensions represented in sorted_extents.
         for manifest_extent in self.manifest_extents:
             if manifest_extent.dimension in checked_dimensions:
                 raise ValueError("cannot create space with extents that are "
@@ -332,7 +336,7 @@ class Space:
                     checked_dimensions.add(d)
             sorted_extents.append(extents_to_use[manifest_extent.dimension])
             checked_dimensions.add(manifest_extent.dimension)
-        
+
         self.extents = sorted_extents
         # Some useful attributes:
         self.dimensions = list(e.dimension for e in self.extents)
@@ -402,7 +406,7 @@ class Space:
             element = Element(self, base_coords)
             dprint_iter(self, "iterate({}): yielding full element".
                         format(element))
-            yield (element, True) # Flag indicating full element.
+            yield (element, True)  # Flag indicating full element.
             return
 
         # We will iterate over the first unassigned extent.
@@ -431,18 +435,18 @@ class Space:
                             format(element), new_element)
                 yield from self.iterate(new_element)
             dprint_iter(self, "iterate({}): finished".format(element))
-        else: # Undemarcated: yield a partial element.
+        else:  # Undemarcated: yield a partial element.
             assigned_extents.remove(extent_to_iterate)
             new_element = Element(Space(assigned_extents), base_coords)
             dprint_iter(self, "iterate({}) yielding partial element:".
                         format(element), new_element)
-            yield (new_element, False) # Flag indicating partial element.
+            yield (new_element, False)  # Flag indicating partial element.
 
 
 class Element:
     def __init__(self, space=Space(), coordinates=dict()):
         self.space = space
-        self.coordinates = {} # dim -> value
+        self.coordinates = {}  # dim -> value
         for extent in self.space.extents:
             dim = extent.dimension
             if dim in coordinates:
@@ -518,7 +522,7 @@ class Surveyer:
             os.unlink(filename)
 
     def create_dirs(self, element):
-        pass # No-op.
+        pass  # No-op.
 
 
 class CommandSurveyer(Surveyer):
@@ -660,14 +664,14 @@ class Cache:
         # combiner - callable taking iterator as argument and returning the
         #            aggregate value
         self.space = space
-        self.level = _level # Index of extent within self.space.
+        self.level = _level  # Index of extent within self.space.
         if self.level < self.space.ndims:
             self.extent = self.space.extents[self.level]
         self.load = loader
         self.combine = combiner
 
-        self.cached = None # The cached value.
-        self.map = {} # 1st-D key -> Cache for next level
+        self.cached = None  # The cached value.
+        self.map = {}  # 1st-D key -> Cache for next level
 
         self.has_loaded_from_file = False
         self.has_deleted_file = False
@@ -721,7 +725,7 @@ class Cache:
 
     def _compute(self, full_element):
         if self.cached is not None:
-            pass # Use cached.
+            pass  # Use cached.
 
         elif not (self.space.ndims - self.level):
             # We are a leaf.
@@ -836,4 +840,3 @@ class Cache:
             dprint_cache("Cache.delete_file", self.persistence_filename)
             os.unlink(self.persistence_filename)
         self.has_deleted_file = True
-

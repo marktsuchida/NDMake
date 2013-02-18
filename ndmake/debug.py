@@ -1,8 +1,9 @@
 import warnings
 
-DEBUG = True # Must be set at module import time.
+DEBUG = True  # Must be set at module import time.
 
 dprint_enabled = {}
+
 
 def enable_dprint(category, enable=True):
     if category not in dprint_enabled:
@@ -10,8 +11,10 @@ def enable_dprint(category, enable=True):
     dprint_enabled[category] = enable
     print("debug: enabling", category)
 
+
 def categories():
     return sorted(dprint_enabled.keys())
+
 
 def dprint_factory(module_name, subcategory=None):
     module_name = module_name.split(".")[-1]
@@ -27,4 +30,3 @@ def dprint_factory(module_name, subcategory=None):
         def dprint(*args):
             pass
     return dprint
-

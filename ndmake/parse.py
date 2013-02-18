@@ -102,22 +102,43 @@ class Token:
             display = "`{}'".format(display)
         return "<{} {}>".format(self.__class__.name, display)
 
-class Keyword(Token): pass
-class QualifiedIdentifier(Token): pass
-class Identifier(QualifiedIdentifier): pass
-class Punctuation(Token): pass
+
+class Keyword(Token):
+    pass
+
+
+class QualifiedIdentifier(Token):
+    pass
+
+
+class Identifier(QualifiedIdentifier):
+    pass
+
+
+class Punctuation(Token):
+    pass
+
+
 class String(Token):
     def __init__(self, lineno, column, text):
         super().__init__(lineno, column, text, display="<string>")
+
+
 class Expression(Token):
     def __init__(self, lineno, column, text):
         super().__init__(lineno, column, text, display="<expression>")
+
+
 class EndOfHeading(Token):
     def __init__(self, lineno, column):
         super().__init__(lineno, column, None, display="<eol>")
+
+
 class IndentedText(Token):
     def __init__(self, lineno, column, text):
         super().__init__(lineno, column, text, display="<indented text>")
+
+
 class EndOfInput(Token):
     def __init__(self, lineno, column):
         super().__init__(lineno, column, None, display="<eof>")
@@ -368,7 +389,7 @@ def parse_dimension_or_domain(action, token):
     # Keyword QualifiedIdentifier {"[" QualifiedIdentifier* "]"}? ":"?
     # EndOfHeading IndentedText
     entries = {}
-    template_entry_key = token.text # values, range, or slice
+    template_entry_key = token.text  # values, range, or slice
 
     token = yield
     if not isinstance(token, QualifiedIdentifier):
@@ -494,6 +515,7 @@ def parse_identifier_list(token):
         token = yield
 
     return names, token
+
 
 @subcoroutine
 def parse_scope(token):
@@ -767,7 +789,7 @@ def lex_expression(action, rol):
 
 @subcoroutine
 def lex_indented_lines(action, rol):
-    indented_lines = [] # Includes empty lines and indented comment lines.
+    indented_lines = []  # Includes empty lines and indented comment lines.
     start_lineno = rol.lineno
     while True:
         if len(rol) and rol.peek() not in hspace:
@@ -794,26 +816,29 @@ def lex_indented_lines(action, rol):
 
 
 _qualified_word_pattern = \
-        re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
+    re.compile(r"[A-Za-z_][0-9A-Za-z_]*(\.[A-Za-z_][0-9A-Za-z_]*)*")
+
 _keywords = [
-            "set",
-            "macro",
-            "data",
-            "compute",
-            "values",
-            "range",
-            "slice",
-            "compute_values",
-            "compute_range",
-            "compute_slice",
-            "data_values",
-           ]
+    "set",
+    "macro",
+    "data",
+    "compute",
+    "values",
+    "range",
+    "slice",
+    "compute_values",
+    "compute_range",
+    "compute_slice",
+    "data_values",
+]
+
+
 @subcoroutine
 def lex_word(action, rol):
     m = rol.match(_qualified_word_pattern)
     assert m
     word = rol.consume(m.end())
-    if m.group(1): # Contains `.'
+    if m.group(1):  # Contains `.'
         action(QualifiedIdentifier(rol.lineno, rol.column, word))
     elif word in _keywords:
         action(Keyword(rol.lineno, rol.column, word))
@@ -875,7 +900,7 @@ def lex_quoted_string(action, rol, raw=False):
             chunks.append(get_string_escape(rol, raw=raw))
             continue
 
-        chunks.append(rol.consume()) # A non-triple quote.
+        chunks.append(rol.consume())  # A non-triple quote.
 
     if raw:
         dprint_string("raw string chunks", chunks)
@@ -888,18 +913,20 @@ def lex_quoted_string(action, rol, raw=False):
 
 
 _str_escapes = {
-               "\n": "",
-               "\\": "\\",
-               "'": "'",
-               '"': '"',
-               "a": "\a",
-               "b": "\b",
-               "f": "\f",
-               "n": "\n",
-               "r": "\r",
-               "t": "\t",
-               "v": "\v",
-              }
+    "\n": "",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+}
+
+
 def get_string_escape(rol, raw=False):
     assert rol.consume == "\\"
     ch = rol.peek()
@@ -964,7 +991,7 @@ def process_indented_lines(lines):
     common_space_prefix = space_prefix(lines[0])
     for line in lines[1:]:
         if not line.strip():
-            continue # Ignore indent of empty lines.
+            continue  # Ignore indent of empty lines.
         common_space_prefix = common_prefix(common_space_prefix,
                                             space_prefix(line))
 
@@ -981,6 +1008,7 @@ def space_prefix(s):
     hspace_pattern = "[{}]*".format(hspace)
     m = re.match(hspace_pattern, s)
     return m.group()
+
 
 def common_prefix(s, t):
     prefix = ""

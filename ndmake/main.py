@@ -140,19 +140,19 @@ def run(argv=sys.argv):
         sys.exit(0)
 
     unimplemented_options = [
-                             "check_symlink_times",
-                             "directory",
-                             "depth_first",
-                             "ignore_errors",
-                             "keep_going",
-                             "dry_run",
-                             "question",
-                             "clean_outdated",
-                             "touch",
-                             "touch_cache",
-                             "assume_old",
-                             "assume_new",
-                            ]
+        "check_symlink_times",
+        "directory",
+        "depth_first",
+        "ignore_errors",
+        "keep_going",
+        "dry_run",
+        "question",
+        "clean_outdated",
+        "touch",
+        "touch_cache",
+        "assume_old",
+        "assume_new",
+    ]
     for option in unimplemented_options:
         if vars(args)[option]:
             raise NotImplementedError("option not yet implemented: --{}".
@@ -192,7 +192,8 @@ def run(argv=sys.argv):
                 target_vertices.append(vertex)
                 continue
             try:
-                vertex = graph.vertex_by_name(vertex_name, depgraph.Computation)
+                vertex = graph.vertex_by_name(vertex_name,
+                                              depgraph.Computation)
             except KeyError:
                 raise KeyError("no dataset or computation named {}".
                                format(vertex_name))
@@ -201,7 +202,7 @@ def run(argv=sys.argv):
 
     options = {}
 
-    if args.clean or args.clear_cache: # Clean mode.
+    if args.clean or args.clear_cache:  # Clean mode.
         if not target_vertices:
             raise NotImplementedError("--clean without targets is not "
                                       "implemented yet (in the future, it "
@@ -249,4 +250,3 @@ def run(argv=sys.argv):
 
 if __name__ == "__main__":
     run(sys.argv)
-

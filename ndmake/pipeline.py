@@ -38,8 +38,8 @@ entity_kinds = {"var", "macro", "dimension", "subdomain", "dataset", "compute"}
 
 class Pipeline:
     def __init__(self):
-        self.entities = {} # (kind, name) -> Entity
-        self.edges = set() # ((kind, name), (kind, name))
+        self.entities = {}  # (kind, name) -> Entity
+        self.edges = set()  # ((kind, name), (kind, name))
         self.last_global_entity = None
 
         self._sorted_keys = None
@@ -370,7 +370,6 @@ class Pipeline:
                             "{%- endmacro %}"))
         graph.template_environment.append_global_defs(source)
 
-
     def _instantiate_dimension_or_domain_entity(self, graph, entity):
         kind, name, entries = entity
         new_template = graph.template_environment.new_template
@@ -454,7 +453,7 @@ class Pipeline:
                                               match_tmpl, tfm_tmpl)
             survey = depgraph.Survey(graph, name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
-            
+
         if survey is not None:
             if isinstance(surveyer, space.CommandSurveyer):
                 for input in entries.get("inputs", ()):
@@ -473,7 +472,7 @@ class Pipeline:
                                 template=template, survey=survey)
             dimension.full_extent = extent
             dimension.default_format = entries.get("format")
-            graph.dimensions[name] = dimension # TODO Use a Graph method.
+            graph.dimensions[name] = dimension  # TODO Use a Graph method.
         else:
             extent = classes[1](superextent, extent_name,
                                 template=template, survey=survey)
@@ -494,7 +493,7 @@ class Pipeline:
         scope = space.Space(extents)
 
         tmpl = graph.template_environment.\
-                new_template("__dataset_{}".format(name), entries["filename"])
+            new_template("__dataset_{}".format(name), entries["filename"])
 
         dataset = depgraph.Dataset(graph, name, scope, tmpl)
         self._add_vertex_to_graph(graph, dataset)
@@ -512,7 +511,7 @@ class Pipeline:
         scope = space.Space(extents)
 
         tmpl = graph.template_environment. \
-                new_template("__compute_{}".format(name), entries["command"])
+            new_template("__compute_{}".format(name), entries["command"])
 
         parallel = entries.get("parallel", "yes")
         try:
@@ -534,4 +533,3 @@ class Pipeline:
         for input in entity.entries.get("inputs", ()):
             dataset = graph.vertex_by_name(input, depgraph.Dataset)
             self._add_edge_to_graph(graph, dataset, compute)
-
