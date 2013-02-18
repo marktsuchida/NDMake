@@ -826,4 +826,4 @@ class DatasetNameProxy:
         new_element = space.Element(space.Space(assigned_extents), coords)
 
         return self.__quoted_filenames(new_element)
-        
+

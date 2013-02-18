@@ -7,15 +7,6 @@ from ndmake import debug
 dprint = debug.dprint_factory(__name__)
 dprint_globals = debug.dprint_factory(__name__, "globals")
 
-# Notes.
-# - There was the idea of a list-template. It might be possible to list-ify
-#   string templates (before rendering) using the template AST. However, quote
-#   handling is complex and probably not worthwhile at this stage.
-# - It is also possible that the desired speedup could be obtained by applying
-#   shlex after template rendering, thereby bypassing the shell.
-# - In any case, knowledge that the command does not use shell syntax is
-#   necessary.
-
 class Environment:
     def __init__(self):
         self._jinja2_environment = None # Create lazily.
