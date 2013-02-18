@@ -4,7 +4,7 @@ from ndmake import dispatch
 dprint = debug.dprint_factory(__name__)
 
 @dispatch.tasklet
-def multiplex(trigger_chan, notification_request_chan):
+def scatter(trigger_chan, notification_request_chan):
     # Blocks until a message is received on trigger_chan. Once received, sends
     # the message to all channels that have been received on
     # notification_request_chan up to then. Immediately sends the message to
@@ -50,7 +50,7 @@ def multiplex(trigger_chan, notification_request_chan):
 
 
 @dispatch.tasklet
-def demultiplex(trigger_chans, signal_combiner=None):
+def gather(trigger_chans, signal_combiner=None):
     trigger_chan_set = set(trigger_chans)
     if trigger_chan_set is trigger_chans: # Just in case we were given a set.
         trigger_chan_set = trigger_chan_set.copy()

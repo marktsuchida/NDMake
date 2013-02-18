@@ -210,7 +210,7 @@ class Graph:
             notification_chans.append(notification_chan)
         if len(notification_chans):
             completion_chan = yield dispatch.MakeChannel()
-            yield dispatch.Spawn(mux.demultiplex(notification_chans),
+            yield dispatch.Spawn(mux.gather(notification_chans),
                                  return_chan=completion_chan)
             yield dispatch.Recv(completion_chan)
 
@@ -244,7 +244,7 @@ class Vertex:
         self.scope = scope
 
         self.update_started = False # Prevent duplicate update.
-        self.notification_request_chan = None # Request chan for mux.
+        self.notification_request_chan = None # Request chan for mux.gather.
 
     def __repr__(self):
         return "<{} \"{}\">".format(type(self).__name__, self.name)
@@ -277,18 +277,18 @@ class Vertex:
             # With the current implementation of dispatch.py, having a large
             # number of channels with pending messages slows down the scheduler
             # significantly. Until this issue is fixed (if ever), we keep down
-            # the number of active channels by preemptively demultiplexing the
+            # the number of active channels by preemptively gathering the
             # completion notification channels. The chunk size of 11 has been
             # determined empirically, but run time is roughly constant with
             # chunk sizes of 2-32.
             if len(completion_chans) > 11:
                 chunk_complete_chan = yield dispatch.MakeChannel()
-                yield dispatch.Spawn(mux.demultiplex(completion_chans),
+                yield dispatch.Spawn(mux.gather(completion_chans),
                                      return_chan = chunk_complete_chan)
                 completion_chans = [chunk_complete_chan]
 
         all_complete_chan = yield dispatch.MakeChannel()
-        yield dispatch.Spawn(mux.demultiplex(completion_chans),
+        yield dispatch.Spawn(mux.gather(completion_chans),
                              return_chan=all_complete_chan)
         yield dispatch.Recv(all_complete_chan)
 
@@ -331,7 +331,7 @@ class Vertex:
 
         # Set up notification for our completion.
         completion_chan = yield dispatch.MakeChannel()
-        yield dispatch.Spawn(mux.multiplex(completion_chan, request_chan))
+        yield dispatch.Spawn(mux.scatter(completion_chan, request_chan))
         yield dispatch.Spawn(self._update(graph, options),
                              return_chan=completion_chan)
 
