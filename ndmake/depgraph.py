@@ -364,12 +364,13 @@ class Vertex:
         if options.get("print_traversed_vertices", True):
             print("finished check/update of {}".format(self))
 
-    def invalidate_up_to_date_cache(self, graph, element):
-        # Propagate computation status invalidation to descendants.
+    def invalidate_computations(self, graph, element):
+        # Invalidate up-to-date-ness cache for this and all descendent
+        # computations.
         # This generic implementation just propagates the call; Computation
         # overrides this to implement the actual invalidation.
         for child in graph.children_of(self):
-            child.invalidate_up_to_date_cache(graph, element)
+            child.invalidate_computations(graph, element)
 
 
 #
@@ -463,7 +464,7 @@ class Dataset(Vertex):
 
         for parent in graph.parents_of(self):
             if isinstance(parent, Computation):
-                parent.invalidate_up_to_date_cache(graph, element)
+                parent.invalidate_computations(graph, element)
 
     def delete_files(self, element):
         for full_element, is_full in self.scope.iterate(element):
@@ -593,15 +594,14 @@ class Computation(Vertex):
         yield from self.execute(graph, element, options)
 
     def clean(self, graph, element, cache_only=False):
-        self.invalidate_up_to_date_cache(graph, element)
+        self.invalidate_computations(graph, element)
         if not cache_only:
             for child in graph.children_of(self):
                 child.delete_files(element)
 
     @dispatch.subtasklet
     def execute(self, graph, element, options):
-        del self.statuses[element]
-        self.invalidate_up_to_date_cache(graph, element)
+        self.invalidate_computations(graph, element)
         for child in graph.children_of(self):
             child.delete_files(element)
             child.create_dirs(element)
@@ -662,9 +662,9 @@ class Computation(Vertex):
                 for child in graph.children_of(self):
                     child.delete_files(element)
 
-    def invalidate_up_to_date_cache(self, graph, element):
+    def invalidate_computations(self, graph, element):
         del self.statuses[element]
-        super().invalidate_up_to_date_cache(graph, element)
+        super().invalidate_computations(graph, element)
 
 
 class Survey(Vertex):
@@ -745,7 +745,7 @@ class Survey(Vertex):
     def execute(self, graph, element, options):
         self.surveyer.delete_files(element, delete_surveyed_files=False)
         del self.mtimes[element]
-        self.invalidate_up_to_date_cache(graph, element)
+        self.invalidate_computations(graph, element)
 
         # Bind input dataset names.
         dataset_name_proxies = dict((parent.name, parent.name_proxy(element))
