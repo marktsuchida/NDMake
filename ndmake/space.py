@@ -656,9 +656,40 @@ class FilenameSurveyer(Surveyer):
 #
 
 class Cache:
-    # A data structure storing values associated with every possible partial or
-    # full element of a space.
+    # A cache to avoid repeated retrieval and computation of aggregate
+    # statistics for subspaces. The "aggregate statistics" are usually the
+    # oldest and newest mtime, but this class is designed to be general.
+    # The cache holds values for all full elements of the associated space, as
+    # well as aggregate values (ultimately computed from the values for the
+    # full elements) for each left-contiguous partial elements. Values for
+    # non-contiguous elements can be computed but are not cached.
+    #
+    # Upon initialization, the Cache is given a loader function, which, given a
+    # full element, returns the corresponding value. The combiner function,
+    # also specified on initialization, takes an iterator that yields values
+    # and returns a single aggregate value. Both values retrieved by the loader
+    # and values computed by the combiner are cached, so that the loading or
+    # aggregation does not need to be repeated.
+    #
+    # When the value for an element (full or partial) is invalidated (deleted),
+    # values for all partial elements containing that element are also cleared.
+    #
+    # The Cache object can be saved to a file (see the set_persistence()
+    # method). The file used for cache persistence is automatically deleted
+    # when it is determined to be outdated. Once persistence is enabled, the
+    # file is loaded automatically and lazily.
+    #
+    # Only up to a set "level" is saved to the persistence file. In other
+    # words, what is persisted can be limited to partial elements of a given
+    # dimensionality. When such a file is loaded, the cache is in a state where
+    # values are "cached" for partial elements even though values for their
+    # full elements are not cached. Cache misses for deeper elements will cause
+    # the corresponding values to be cached, but will not invalidate the loaded
+    # values for partial elements (which is correct, under the assumption that
+    # the cache remains valid).
+
     # XXX TODO Deal with undemarcated extents. Or no need?
+
     def __init__(self, space, loader, combiner, _level=0):
         # loader   - callable providing the uncached value for a full element
         # combiner - callable taking iterator as argument and returning the
@@ -677,6 +708,7 @@ class Cache:
         self.has_deleted_file = False
 
     def set_persistence(self, reader, writer, path, filename, level):
+        # The reader and writer are used to (de)serialize values.
         # Only the toplevel Cache uses these attributes.
         self.reader = reader
         self.writer = writer
@@ -717,7 +749,8 @@ class Cache:
                                            full_element.
                                            appended(self.extent, key))
 
-        # Key element skips our dimension.
+        # Key element skips our dimension. Compute on the fly, but don't cache
+        # at our level.
         return self.combine(self._subtree(key).
                             _get(key_element, dim_index,
                                  full_element.appended(self.extent, key))
