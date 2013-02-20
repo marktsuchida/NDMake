@@ -21,19 +21,34 @@ def dprint_mtime(mtime, *args):
             _dprint_mtime("mtime", mtime, *args)
 
 
-# A constant representing a "valid" time-since-epoch value.
-# This is only done to prevent errors when printing ctime(MAX_TIME).
-MAX_TIME = 2**64 - 1
+# FAR_PAST and FAR_FUTURE: constants representing missing time.
+# They are made to be "valid" time-since-epoch values, so that calling ctime()
+# on them does not raise errors.
+
+FAR_PAST = -2**64
 while True:
     try:
-        time.asctime(time.gmtime(MAX_TIME))
-        time.ctime(MAX_TIME)
+        time.asctime(time.gmtime(FAR_PAST))
+        time.ctime(FAR_PAST)
     except:
-        MAX_TIME >>= 1
+        FAR_PAST >>= 1
+    else:
+        # Clip to a recognizable minimum to aid debugging.
+        min_far_past = time.mktime((1, 1, 1, 0, 0, 0, 0, 0, 0))
+        FAR_PAST = max(FAR_PAST, min_far_past)
+        break
+
+FAR_FUTURE = 2**64 - 1
+while True:
+    try:
+        time.asctime(time.gmtime(FAR_FUTURE))
+        time.ctime(FAR_FUTURE)
+    except:
+        FAR_FUTURE >>= 1
     else:
         # Clip to a recognizable maximum to aid debugging.
-        max_max_time = time.mktime((2999, 12, 31, 23, 59, 59, 0, 0, 0))
-        MAX_TIME = min(MAX_TIME, max_max_time)
+        max_far_future = time.mktime((2999, 12, 31, 23, 59, 59, 0, 0, 0))
+        FAR_FUTURE = min(FAR_FUTURE, max_far_future)
         break
 
 
@@ -43,22 +58,22 @@ def get(filename):
         dprint_mtime(mtime, filename)
     except FileNotFoundError:
         dprint_mtime("missing", filename)
-        return 0, MAX_TIME
+        return FAR_PAST, FAR_FUTURE
     return mtime, mtime  # oldest, newest
 
 
 def extrema(iter):
     # For use as combiner for space.Cache.
-    oldest, newest = MAX_TIME, 0
+    oldest, newest = FAR_FUTURE, FAR_PAST
     for old, new in iter:
-        if old == 0 or new == MAX_TIME:
-            assert (old, new) == (0, MAX_TIME)
-            return 0, MAX_TIME
+        if old == FAR_PAST or new == FAR_FUTURE:
+            assert (old, new) == (FAR_PAST, FAR_FUTURE)
+            return FAR_PAST, FAR_FUTURE
         oldest = min(oldest, old)
         newest = max(newest, new)
-    if (oldest, newest) == (MAX_TIME, 0):
+    if (oldest, newest) == (FAR_FUTURE, FAR_PAST):
         # iter did not yield anything.
-        return 0, MAX_TIME
+        return FAR_PAST, FAR_FUTURE
     return oldest, newest
 
 

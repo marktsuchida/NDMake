@@ -405,7 +405,7 @@ class Dataset(Vertex):
             return
 
         oldest_mtime, newest_mtime = self.mtimes[space.Element()]
-        if oldest_mtime > 0:
+        if oldest_mtime > mtime.FAR_PAST:
             dprint_update(self, "all elements up to date")
             if options.get("cache", False):
                 self.mtimes.save_to_file()
@@ -431,7 +431,7 @@ class Dataset(Vertex):
 
         oldest_mtime, newest_mtime = self.mtimes[element]
 
-        if oldest_mtime == 0 or newest_mtime == mtime.MAX_TIME:
+        if oldest_mtime == mtime.FAR_PAST or newest_mtime == mtime.FAR_FUTURE:
             # There are missing files.
             # Unless this is a dry run or a keep-going run, we raise an error.
             # XXX For now, we raise an error unconditionally.
@@ -548,7 +548,7 @@ class Computation(Vertex):
         oldest_child_mtime, _ = mtime.extrema(child.mtimes[element]
                                               for child
                                               in graph.children_of(self))
-        if oldest_child_mtime > 0:
+        if oldest_child_mtime > mtime.FAR_PAST:
             _, newest_input_mtime = mtime.extrema(parent.mtimes[element]
                                                   for parent
                                                   in graph.parents_of(self)
@@ -725,7 +725,7 @@ class Survey(Vertex):
             return
 
         our_mtime, _ = self.mtimes[element]
-        if our_mtime > 0:
+        if our_mtime > mtime.FAR_PAST:
             if self.surveyer.mtimes_include_files:
                 self.load_result(element)
                 return
