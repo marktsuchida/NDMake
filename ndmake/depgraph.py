@@ -405,7 +405,7 @@ class Dataset(Vertex):
             return
 
         oldest_mtime, newest_mtime = self.mtimes[space.Element()]
-        if oldest_mtime > mtime.FAR_PAST:
+        if not mtime.missing(oldest_mtime, newest_mtime):
             dprint_update(self, "all elements up to date")
             if options.get("cache", False):
                 self.mtimes.save_to_file()
@@ -431,8 +431,7 @@ class Dataset(Vertex):
 
         oldest_mtime, newest_mtime = self.mtimes[element]
 
-        if oldest_mtime == mtime.FAR_PAST or newest_mtime == mtime.FAR_FUTURE:
-            # There are missing files.
+        if mtime.missing(oldest_mtime, newest_mtime):
             # Unless this is a dry run or a keep-going run, we raise an error.
             # XXX For now, we raise an error unconditionally.
             filename = self.render_filename(element)
@@ -545,16 +544,15 @@ class Computation(Vertex):
                                        extra_names=dict_)
 
     def is_up_to_date(self, graph, element):
-        oldest_child_mtime, _ = mtime.extrema(child.mtimes[element]
-                                              for child
-                                              in graph.children_of(self))
-        if oldest_child_mtime > mtime.FAR_PAST:
-            _, newest_input_mtime = mtime.extrema(parent.mtimes[element]
-                                                  for parent
-                                                  in graph.parents_of(self)
-                                                  if isinstance(parent,
-                                                                Dataset))
-            if newest_input_mtime <= oldest_child_mtime:
+        child_oldest, child_newest = mtime.extrema(child.mtimes[element]
+                                                   for child
+                                                   in graph.children_of(self))
+        if not mtime.missing(child_oldest, child_newest):
+            _, input_newest = mtime.extrema(parent.mtimes[element]
+                                            for parent
+                                            in graph.parents_of(self)
+                                            if isinstance(parent, Dataset))
+            if input_newest <= child_oldest:
                 return True
         return False
 
@@ -724,18 +722,17 @@ class Survey(Vertex):
             yield from self.execute(graph, element, options)
             return
 
-        our_mtime, _ = self.mtimes[element]
-        if our_mtime > mtime.FAR_PAST:
+        our_oldest, our_newest = self.mtimes[element]
+        if not mtime.missing(our_oldest, our_newest):
             if self.surveyer.mtimes_include_files:
                 self.load_result(element)
                 return
 
-            _, newest_input_mtime = mtime.extrema(parent.mtimes[element]
-                                                  for parent
-                                                  in graph.parents_of(self)
-                                                  if isinstance(parent,
-                                                                Dataset))
-            if newest_input_mtime <= our_mtime:
+            _, input_newest = mtime.extrema(parent.mtimes[element]
+                                            for parent
+                                            in graph.parents_of(self)
+                                            if isinstance(parent, Dataset))
+            if input_newest <= our_oldest:
                 self.load_result(element)
                 return
 

@@ -603,21 +603,22 @@ class FilenameSurveyer(Surveyer):
 
     def read_mtimes(self, element):
         roster_old, roster_new = super().read_mtimes(element)
-        if roster_old == mtime.FAR_PAST or roster_new == mtime.FAR_FUTURE:
-            return mtime.FAR_PAST, mtime.FAR_FUTURE
+        if mtime.missing(roster_old, roster_new):
+            return mtime.MISSING
 
         roster_text = super().load_result(element)
-        oldest_mtime, newest_mtime = roster_old, roster_new
+        our_oldest, our_newest = roster_old, roster_new
         for filename, recorded_mtime in (shlex.split(line)[:2]
                                          for line in roster_text.splitlines()):
-            mod_time, _ = mtime.get(filename)
-            if mod_time == mtime.FAR_PAST:
-                return mtime.FAR_PAST, mtime.FAR_FUTURE
-            if mod_time != recorded_mtime:
-                return mtime.FAR_PAST, mtime.FAR_FUTURE
-            oldest_mtime = min(oldest_mtime, mod_time)
-            newest_mtime = max(newest_mtime, mod_time)
-        return oldest_mtime, newest_mtime
+            file_oldest, file_newest = mtime.get(filename)
+            if mtime.missing(file_oldest, file_newest):
+                return mtime.MISSING
+            assert file_oldest == file_newest
+            if file_oldest != recorded_mtime:
+                return mtime.MISSING
+            our_oldest = min(our_oldest, file_oldest)
+            our_newest = max(our_newest, file_oldest)
+        return our_oldest, our_newest
 
     def load_result(self, element):
         roster_text = super().load_result(element)

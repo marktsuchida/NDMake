@@ -52,28 +52,44 @@ while True:
         break
 
 
+# In general, we handle mtimes as the pair (oldest, newest). For a single file,
+# oldest == newest == file's mtime. When dealing with a set of files, the two
+# items indicate the mtime extrema.
+
+# The get() function below reports MISSING == (FAR_PAST, FAR_FUTURE) for files
+# that don't exist. This gets propagated to file set mtimes via extrema().
+
+MISSING = (FAR_PAST, FAR_FUTURE)
+_EMPTY_EXTREMA = (FAR_FUTURE, FAR_PAST)
+
+
 def get(filename):
     try:
         mtime = os.path.getmtime(filename)
         dprint_mtime(mtime, filename)
     except FileNotFoundError:
         dprint_mtime("missing", filename)
-        return FAR_PAST, FAR_FUTURE
+        return MISSING
     return mtime, mtime  # oldest, newest
+
+
+def missing(oldest, newest):
+    return oldest == FAR_PAST or newest == FAR_FUTURE
 
 
 def extrema(iter):
     # For use as combiner for space.Cache.
-    oldest, newest = FAR_FUTURE, FAR_PAST
+    # iter yields (old, new) pairs.
+    oldest, newest = _EMPTY_EXTREMA
     for old, new in iter:
-        if old == FAR_PAST or new == FAR_FUTURE:
-            assert (old, new) == (FAR_PAST, FAR_FUTURE)
-            return FAR_PAST, FAR_FUTURE
+        if missing(old, new):
+            assert (old, new) == MISSING
+            return MISSING
         oldest = min(oldest, old)
         newest = max(newest, new)
-    if (oldest, newest) == (FAR_FUTURE, FAR_PAST):
+    if (oldest, newest) == _EMPTY_EXTREMA:
         # iter did not yield anything.
-        return FAR_PAST, FAR_FUTURE
+        return MISSING
     return oldest, newest
 
 
