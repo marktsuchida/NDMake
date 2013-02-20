@@ -659,21 +659,23 @@ class FilenameSurveyer(Surveyer):
 class Cache:
     # A cache to avoid repeated retrieval and computation of aggregate
     # statistics for subspaces. The "aggregate statistics" are usually the
-    # oldest and newest mtime, but this class is designed to be general.
-    # The cache holds values for all full elements of the associated space, as
-    # well as aggregate values (ultimately computed from the values for the
-    # full elements) for each left-contiguous partial elements. Values for
+    # oldest and newest mtime, but this class is designed to be general. The
+    # cache holds values for all full elements of the associated space, as well
+    # as aggregate values (ultimately computed from the values for the full
+    # elements) for each left-contiguous partial elements. Values for
     # non-contiguous elements can be computed but are not cached.
     #
     # Upon initialization, the Cache is given a loader function, which, given a
     # full element, returns the corresponding value. The combiner function,
     # also specified on initialization, takes an iterator that yields values
     # and returns a single aggregate value. Both values retrieved by the loader
-    # and values computed by the combiner are cached, so that the loading or
-    # aggregation does not need to be repeated.
+    # and values computed by the combiner are cached, so that the loading and
+    # aggregation is repeated as infrequently as possible.
     #
     # When the value for an element (full or partial) is invalidated (deleted),
     # values for all partial elements containing that element are also cleared.
+    # This ensures that all values that might have changed are cleared. When a
+    # partial element is invalidated, any sub-elements are also removed.
     #
     # The Cache object can be saved to a file (see the set_persistence()
     # method). The file used for cache persistence is automatically deleted
@@ -718,17 +720,17 @@ class Cache:
 
     def __getitem__(self, element):
         # Used only on the toplevel Cache.
-        self.load_from_file()
+        self._load_from_file()
         element = self.space.canonicalized_element(element)
         return self._get(element, 0, Element())
 
     def __delitem__(self, element):
         # Used only on the toplevel Cache.
-        self.load_from_file()
+        self._load_from_file()
         element = self.space.canonicalized_element(element,
                                                    allow_nonsub_extents=True)
         self._invalidate(element, 0)
-        self.delete_file()
+        self._delete_file()
 
     def _subtree(self, key):
         if key not in self.map:
@@ -801,18 +803,18 @@ class Cache:
         key = element[self.extent.dimension]
         self._subtree(key)._set(element, value, dim_index + 1)
 
-    def write_file_lines(self, writer, fprint, element, level):
+    def _write_file_lines(self, writer, fprint, element, level):
         if self.cached is not None:
             fprint(shlex.quote(os.path.join("/", files.element_path(element))),
                    shlex.quote(writer(self.cached)))
         if len(element) == self.space.ndims or not level:
             return
         for key, subtree in self.map.items():
-            subtree.write_file_lines(writer, fprint,
-                                     element.appended(self.extent, key),
-                                     level - 1)
+            subtree._write_file_lines(writer, fprint,
+                                      element.appended(self.extent, key),
+                                      level - 1)
 
-    def load_from_file(self):
+    def _load_from_file(self):
         if self.has_loaded_from_file or self.has_deleted_file:
             return
         if not hasattr(self, "persistence_filename"):
@@ -821,7 +823,7 @@ class Cache:
             self.has_deleted_file = True
             return
 
-        dprint_cache("Cache.load_from_file", self.persistence_filename)
+        dprint_cache("Cache._load_from_file", self.persistence_filename)
         with open(self.persistence_filename) as file:
             try:
                 for line in file:
@@ -846,7 +848,7 @@ class Cache:
                 self.map.clear()
                 dprint_cache("Cache: cannot read file; deleting:",
                              self.persistence_filename)
-                self.delete_file()
+                self._delete_file()
                 return
 
         self.has_loaded_from_file = True
@@ -859,18 +861,18 @@ class Cache:
         dprint_cache("Cache.save_to_file", self.persistence_filename)
         with open(self.persistence_filename, "w") as file:
             fprint = functools.partial(print, file=file)
-            self.write_file_lines(self.writer, fprint,
-                                  Element(), self.persistence_level)
+            self._write_file_lines(self.writer, fprint,
+                                   Element(), self.persistence_level)
 
         self.has_deleted_file = False
 
-    def delete_file(self):
+    def _delete_file(self):
         if self.has_deleted_file:
             return
         if not hasattr(self, "persistence_filename"):
             return
         dprint_unlink("deleting", self.persistence_filename)
         if os.path.exists(self.persistence_filename):
-            dprint_cache("Cache.delete_file", self.persistence_filename)
+            dprint_cache("Cache._delete_file", self.persistence_filename)
             os.unlink(self.persistence_filename)
         self.has_deleted_file = True
