@@ -11,7 +11,7 @@ def touch(path):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as file:
         os.utime(path)
-    return os.path.getmtime(path)
+        return os.path.getmtime(path)
 
 
 def ndmake_dir():
