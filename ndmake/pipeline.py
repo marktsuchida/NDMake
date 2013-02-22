@@ -417,7 +417,7 @@ class Pipeline:
                 tfm_tmpl = None
             surveyer = space.ValuesCommandSurveyer(name, scope,
                                                    tmpl, tfm_tmpl)
-            survey = depgraph.Survey(graph, name, scope, surveyer)
+            survey = depgraph.Survey(name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
 
         elif "range_command" in entries:
@@ -426,7 +426,7 @@ class Pipeline:
             tmpl = new_template("__rcmd_{}".format(name),
                                 entries["range_command"])
             surveyer = space.IntegerTripletCommandSurveyer(name, scope, tmpl)
-            survey = depgraph.Survey(graph, name, scope, surveyer)
+            survey = depgraph.Survey(name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
 
         elif "slice_command" in entries:
@@ -435,7 +435,7 @@ class Pipeline:
             tmpl = new_template("__scmd_{}".format(name),
                                 entries["slice_command"])
             surveyer = space.IntegerTripletCommandSurveyer(name, scope, tmpl)
-            survey = depgraph.Survey(graph, name, scope, surveyer)
+            survey = depgraph.Survey(name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
 
         else:
@@ -451,7 +451,7 @@ class Pipeline:
                 tfm_tmpl = None
             surveyer = space.FilenameSurveyer(name, scope,
                                               match_tmpl, tfm_tmpl)
-            survey = depgraph.Survey(graph, name, scope, surveyer)
+            survey = depgraph.Survey(name, scope, surveyer)
             self._add_vertex_to_graph(graph, survey)
 
         if survey is not None:
@@ -495,7 +495,7 @@ class Pipeline:
         tmpl = graph.template_environment.\
             new_template("__dataset_{}".format(name), entries["filename"])
 
-        dataset = depgraph.Dataset(graph, name, scope, tmpl)
+        dataset = depgraph.Dataset(name, scope, tmpl)
         self._add_vertex_to_graph(graph, dataset)
 
         if "producer" in entries:
@@ -527,7 +527,7 @@ class Pipeline:
         except:
             raise ValueError("invalid parallel specifier: {}")
 
-        compute = depgraph.Computation(graph, name, scope, tmpl, occupancy)
+        compute = depgraph.Computation(name, scope, tmpl, occupancy)
         self._add_vertex_to_graph(graph, compute)
 
         for input in entity.entries.get("inputs", ()):

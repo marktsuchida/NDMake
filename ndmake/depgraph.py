@@ -46,35 +46,34 @@ class CalledProcessError(UpdateException):
 #
 
 class Graph:
-    # Vertices and edges are managed by integer vertex ids. The Vertex objects
-    # themselves do not hold pointers to each other.
-    #
+    # The components of the dependency graph (Vertex objects) have several
+    # mutual relationships (input, output, scope-dependency, detected-dataset,
+    # etc.). In addition to those relationships, vertices are connected into a
+    # single, unified dependency graph through parent-child relationships,
+    # which determine the order of traversal during update operations. Many of
+    # the parent-child relationships in the unified graph duplicate other
+    # qualified relationships between vertices. The Graph object manages this
+    # unified graph. The Graph object also keeps other information associated
+    # with execution graph construction: the set of dimensions and the template
+    # environment for execution.
+
     # The acyclicity of the directed graph is enforced during graph
-    # construction. XXX Might be more efficient to check later.
+    # construction.
 
     def __init__(self):
-        self._vertex_id_generator = itertools.count(0)
+        self.vertices = set()  # Vertex
+        self._vertices_by_name = {}  # (name, type_) -> Vertex
+        self._edges = set()  # (parent, child)
 
-        # Vertices.
-        self._vertex_id_map = {}  # Vertex -> id
-        self._id_vertex_map = {}  # id -> Vertex
-        self._name_id_map = {}  # (name, type_) -> id
-
-        # Edges.
-        self._parents = {}  # id -> set(ids)
-        self._children = {}  # id -> set(ids)
-
-        # Dimensions.
         self.dimensions = {}  # name -> Dimension
 
-        # Templates.
         self.template_environment = template.Environment()
 
     def write_graphviz(self, filename):
         with open(filename, "w") as file:
             fprint = functools.partial(print, file=file)
             fprint("digraph depgraph {")
-            for id, vertex in self._id_vertex_map.items():
+            for vertex in self.vertices:
                 label = vertex.name
                 shape = "box"
                 color = "black"
@@ -88,158 +87,139 @@ class Graph:
                     label = " ".join((vertex.__class__.__name__, vertex.name))
                     shape = "box"
                     color = "red"
-                fprint("v{:d} [label=\"{}\" shape=\"{}\" color=\"{}\"];".
-                       format(id, label, shape, color))
-            for parent, children in self._parents.items():
-                for child in children:
-                    fprint("v{:d} -> v{:d};".format(child, parent))
+                fprint("{} [label=\"{}\" shape=\"{}\" color=\"{}\"];".
+                       format(vertex.graphviz_name, label, shape, color))
+            for parent, child in self._edges:
+                fprint("{} -> {};".format(child.graphviz_name,
+                                          parent.graphviz_name))
             fprint("}")
 
     def vertex_by_name(self, name, type_):
         """Return a vertex with the given name and type."""
         try:
-            vertex_id = self._name_id_map[(name, type_)]
+            vertex = self._vertices_by_name[(name, type_)]
         except KeyError:
             raise KeyError("no {} vertex named {}".format(type_.__name__,
                                                           name))
-        return self._id_vertex_map[vertex_id]
+        return vertex
 
     def add_vertex(self, vertex):
-        """Add an isolated vertex to the graph and return the vertex id."""
+        """Add an isolated vertex to the graph."""
+        if vertex in self.vertices:
+            return
+
         name_key = (vertex.name, vertex.namespace_type)
-        if name_key in self._name_id_map:
-            existing_id = self._name_id_map[name_key]
-            existing_vertex = self._id_vertex_map[existing_id]
-            if vertex is existing_vertex:
-                return existing_id
+        if name_key in self._vertices_by_name:
             raise KeyError("a {} vertex named {} already exists".
                            format(vertex.namespace_type.__name__,
                                   vertex.name))
 
-        vertex_id = next(self._vertex_id_generator)
-        self._vertex_id_map[vertex] = vertex_id
-        self._id_vertex_map[vertex_id] = vertex
-        self._name_id_map[name_key] = vertex_id
-        return vertex_id
+        self.vertices.add(vertex)
+        self._vertices_by_name[name_key] = vertex
 
-    def _vertex_id(self, vertex, add_if_not_member=False):
-        if add_if_not_member and vertex not in self._vertex_id_map:
-            return self.add_vertex(vertex)
-        return self._vertex_id_map[vertex]
-
-    def add_edge(self, from_vertex, to_vertex):
+    def add_edge(self, parent, child):
         """Add an edge between two vertices.
 
         If either or both of the vertices do not belong to the graph, add them
         as well.
         """
-        from_id = self._vertex_id(from_vertex, add_if_not_member=True)
-        to_id = self._vertex_id(to_vertex, add_if_not_member=True)
+        self.add_vertex(parent)
+        self.add_vertex(child)
 
-        if from_id == to_id:
-            raise ValueError("attempt to create self-dependent vertex")
-        if self._is_ancestor(to_vertex, from_vertex):
+        if parent is child or child.is_ancestor_of(parent):
             raise ValueError("attmpt to create cycle in graph")
 
-        self._parents.setdefault(to_id, set()).add(from_id)
-        self._children.setdefault(from_id, set()).add(to_id)
-
-    def _is_ancestor(self, the_vertex, other_vertex):
-        # Not the most efficient traversal, but good enough for now.
-        for child in self.children_of(the_vertex):
-            if child is other_vertex or self._is_ancestor(child, other_vertex):
-                return True
+        self._edges.add((parent, child))
+        parent.children.add(child)
+        child.parents.add(parent)
 
     def simplify_by_transitive_reduction(self):
-        visited_ids = set()
+        visited = set()
 
-        def visit(vertex_id, previous_vertex_id):
-            visited_ids.add(vertex_id)
+        def visit(vertex, previous_vertex):
+            visited.add(vertex)
 
             # Remove shortcut edges from visited ancestors.
-            for parent_id in list(self._parents.get(vertex_id, [])):
-                if parent_id is previous_vertex_id:
+            for parent in list(vertex.parents):
+                if parent is previous_vertex:
                     continue
 
-                if parent_id in visited_ids:
-                    # Remove this edge if its tail is a Survey.
-                    if isinstance(self._id_vertex_map[parent_id], Survey):
-                        self._parents[vertex_id].remove(parent_id)
-                        self._children[parent_id].remove(vertex_id)
+                if parent in visited:
+                    # Remove this edge if the parent is a Survey.
+                    # (Don't remove input-consumer or producer-output edges.)
+                    # TODO Do not depend on vertex type.
+                    if isinstance(parent, Survey):
+                        vertex.parents.remove(parent)
+                        parent.children.remove(vertex)
+                        self._edges.remove((parent, vertex))
 
             # Proceed to children.
-            for child_id in list(self._children.get(vertex_id, [])):
+            for child in list(vertex.children):
                 # Children may be removed during iteration.
-                if child_id in self._children.get(vertex_id, []):
-                    visit(child_id, vertex_id)
+                if child in vertex.children:
+                    visit(child, vertex)
 
-            visited_ids.remove(vertex_id)
+            visited.remove(vertex)
 
-        for vertex_id in self._id_vertex_map:
-            visit(vertex_id, None)
-
-    def parents_of(self, vertex):
-        """Return the parent vertices of the given vertex."""
-        return list(self._id_vertex_map[i] for i in
-                    self._parents.get(self._vertex_id_map[vertex], []))
-
-    def children_of(self, vertex):
-        """Return the child vertices of the given vertex."""
-        return list(self._id_vertex_map[i] for i in
-                    self._children.get(self._vertex_id_map[vertex], []))
+        for vertex in self.vertices:
+            visit(vertex, None)
 
     def sources(self):
         """Return all vertices that do not have parents.
 
         Includes isolated vertices, if any.
         """
-        return list(self._id_vertex_map[id]
-                    for id in self._id_vertex_map.keys()
-                    if not len(self._parents.setdefault(id, set())))
+        return list(vertex for vertex in self.vertices
+                    if not len(vertex.parents))
 
     def sinks(self):
         """Return all vertices that do not have children.
 
         Includes isolated vertices, if any.
         """
-        return list(self._id_vertex_map[id]
-                    for id in self._id_vertex_map.keys()
-                    if not len(self._children.setdefault(id, set())))
+        return list(vertex for vertex in self.vertices
+                    if not len(vertex.children))
 
-    @dispatch.tasklet
-    def update_vertices(self, vertices, options):
-        for vertex in vertices:
-            yield dispatch.Spawn(vertex.update(self, options))
 
-        # Wait for completion.
-        notification_chans = []  # Can't use generator expression here.
-        for vertex in vertices:
-            notification_chan = yield from vertex.get_notification_chan()
-            notification_chans.append(notification_chan)
-        if len(notification_chans):
-            completion_chan = yield dispatch.MakeChannel()
-            yield dispatch.Spawn(mux.gather(notification_chans),
-                                 return_chan=completion_chan)
-            yield dispatch.Recv(completion_chan)
+#
+# Updating vertices
+#
 
-    @dispatch.tasklet
-    def update_vertices_with_threadpool(self, vertices, options):
-        if options.get("parallel", False):
-            jobs = options.get("jobs")
-            if not jobs or jobs < 1:
-                jobs = multiprocessing.cpu_count()
-                options["jobs"] = jobs
-            task_chan = yield dispatch.MakeChannel()
-            yield dispatch.Spawn(threadpool.threadpool(task_chan, jobs))
-            options["threadpool"] = task_chan
+@dispatch.tasklet
+def update_vertices(vertices, options):
+    for vertex in vertices:
+        yield dispatch.Spawn(vertex.update(options))
 
-        yield from self.update_vertices(vertices, options)
+    # Wait for completion.
+    notification_chans = []  # Can't use generator expression here.
+    for vertex in vertices:
+        notification_chan = yield from vertex.get_notification_chan()
+        notification_chans.append(notification_chan)
+    if len(notification_chans):
+        completion_chan = yield dispatch.MakeChannel()
+        yield dispatch.Spawn(mux.gather(notification_chans),
+                             return_chan=completion_chan)
+        yield dispatch.Recv(completion_chan)
 
-        if "threadpool" in options:
-            finish_chan = yield dispatch.MakeChannel()
-            yield dispatch.Send(task_chan, (..., None, finish_chan, None),
-                                block=False)
-            yield dispatch.Recv(finish_chan)
+
+@dispatch.tasklet
+def update_vertices_with_threadpool(vertices, options):
+    if options.get("parallel", False):
+        jobs = options.get("jobs")
+        if not jobs or jobs < 1:
+            jobs = multiprocessing.cpu_count()
+            options["jobs"] = jobs
+        task_chan = yield dispatch.MakeChannel()
+        yield dispatch.Spawn(threadpool.threadpool(task_chan, jobs))
+        options["threadpool"] = task_chan
+
+    yield from update_vertices(vertices, options)
+
+    if "threadpool" in options:
+        finish_chan = yield dispatch.MakeChannel()
+        yield dispatch.Send(task_chan, (..., None, finish_chan, None),
+                            block=False)
+        yield dispatch.Recv(finish_chan)
 
 
 #
@@ -247,7 +227,10 @@ class Graph:
 #
 
 class Vertex:
-    def __init__(self, graph, name, scope):
+    def __init__(self, name, scope):
+        self.parents = set()
+        self.children = set()
+
         self.name = name
         self.scope = scope
 
@@ -260,6 +243,9 @@ class Vertex:
     def __str__(self):
         return "{} {}".format(type(self).__name__.lower(), self.name)
 
+    def graphviz_name(self):
+        return "{}_{}".format(self.namespace_type.__name__, self.name)
+
     @property
     def namespace_type(self):
         if isinstance(self, Dataset):
@@ -269,8 +255,13 @@ class Vertex:
         if isinstance(self, Survey):
             return Survey
 
+    def is_ancestor_of(self, other):
+        for child in self.children:
+            if other is child or child.is_ancestor_of(other):
+                return True
+
     @dispatch.tasklet
-    def update_all_elements(self, graph, options):
+    def update_all_elements(self, options):
         # This method implements element-by-element update. Subclasses can
         # override this method to do a full-scope check before calling super().
         dprint_update(self, "updating all elements")
@@ -278,7 +269,7 @@ class Vertex:
         for element, is_full in self.scope.iterate():
             completion_chan = yield dispatch.MakeChannel()
             completion_chans.append(completion_chan)
-            yield dispatch.Spawn(self.update_element(graph, element, is_full,
+            yield dispatch.Spawn(self.update_element(element, is_full,
                                                      options),
                                  return_chan=completion_chan)
 
@@ -327,7 +318,7 @@ class Vertex:
         return notification_chan
 
     @dispatch.tasklet
-    def update(self, graph, options):
+    def update(self, options):
         # Prevent duplicate execution.
         if self.update_started:
             return
@@ -340,17 +331,16 @@ class Vertex:
         # Set up notification for our completion.
         completion_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(mux.scatter(completion_chan, request_chan))
-        yield dispatch.Spawn(self._update(graph, options),
+        yield dispatch.Spawn(self._update(options),
                              return_chan=completion_chan)
 
     @dispatch.tasklet
-    def _update(self, graph, options):
+    def _update(self, options):
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
                         "traversing upward:", self)
 
         # Update prerequisites.
-        parents = graph.parents_of(self)
-        yield from graph.update_vertices(parents, options)
+        yield from update_vertices(self.parents, options)
 
         # Perform the update action.
         dprint_traverse("tid {}".format((yield dispatch.GetTid())),
@@ -358,19 +348,19 @@ class Vertex:
         if options.get("print_traversed_vertices", True):
             print("starting check/update of {}".format(self))
         completion_chan = yield dispatch.MakeChannel()
-        yield dispatch.Spawn(self.update_all_elements(graph, options),
+        yield dispatch.Spawn(self.update_all_elements(options),
                              return_chan=completion_chan)
         yield dispatch.Recv(completion_chan)
         if options.get("print_traversed_vertices", True):
             print("finished check/update of {}".format(self))
 
-    def invalidate_computations(self, graph, element):
+    def invalidate_computations(self, element):
         # Invalidate up-to-date-ness cache for this and all descendent
         # computations.
         # This generic implementation just propagates the call; Computation
         # overrides this to implement the actual invalidation.
-        for child in graph.children_of(self):
-            child.invalidate_computations(graph, element)
+        for child in self.children:
+            child.invalidate_computations(element)
 
 
 #
@@ -378,8 +368,8 @@ class Vertex:
 #
 
 class Dataset(Vertex):
-    def __init__(self, graph, name, scope, filename_template):
-        super().__init__(graph, name, scope)
+    def __init__(self, name, scope, filename_template):
+        super().__init__(name, scope)
         self.filename_template = filename_template
 
         self.mtimes = space.Cache(self.scope, self.read_mtimes, mtime.extrema)
@@ -400,7 +390,7 @@ class Dataset(Vertex):
         return mtime.get(self.render_filename(element))
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, options):
+    def update_all_elements(self, options):
         if options.get("survey_only", False):
             return
 
@@ -411,12 +401,12 @@ class Dataset(Vertex):
                 self.mtimes.save_to_file()
             return
 
-        yield from super().update_all_elements(graph, options)
+        yield from super().update_all_elements(options)
         if options.get("cache", False):
             self.mtimes.save_to_file()
 
     @dispatch.tasklet
-    def update_element(self, graph, element, is_full, options):
+    def update_element(self, element, is_full, options):
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -435,8 +425,7 @@ class Dataset(Vertex):
             # Unless this is a dry run or a keep-going run, we raise an error.
             # XXX For now, we raise an error unconditionally.
             filename = self.render_filename(element)
-            parents = graph.parents_of(self)
-            for parent in parents:
+            for parent in self.parents:
                 if isinstance(parent, Computation):
                     raise MissingFileException("file {filename} (member of "
                                                "dataset {dataset}; output of "
@@ -455,15 +444,15 @@ class Dataset(Vertex):
         return
         yield
 
-    def clean(self, graph, element, cache_only=False):
+    def clean(self, element, cache_only=False):
         if cache_only:
             del self.mtimes[element]
         else:
             self.delete_files(element)
 
-        for parent in graph.parents_of(self):
+        for parent in self.parents:
             if isinstance(parent, Computation):
-                parent.invalidate_computations(graph, element)
+                parent.invalidate_computations(element)
 
     def delete_files(self, element):
         for full_element, is_full in self.scope.iterate(element):
@@ -513,13 +502,12 @@ class Dataset(Vertex):
 
 
 class Computation(Vertex):
-    def __init__(self, graph, name, scope, command_template, occupancy=1):
-        super().__init__(graph, name, scope)
+    def __init__(self, name, scope, command_template, occupancy=1):
+        super().__init__(name, scope)
         self.command_template = command_template
         self.occupancy = occupancy
 
-        is_up_to_date = functools.partial(self.is_up_to_date, graph)
-        self.statuses = space.Cache(self.scope, is_up_to_date, all)
+        self.statuses = space.Cache(self.scope, self.is_up_to_date, all)
         persistence_path = os.path.join(files.ndmake_dir(), "compute",
                                         self.name)
         self.statuses.set_persistence(lambda s: bool(int(s)),
@@ -530,9 +518,9 @@ class Computation(Vertex):
     def __str__(self):
         return "compute {}".format(self.name)
 
-    def render_command(self, graph, element):
+    def render_command(self, element):
         # Bind input and output dataset names.
-        io_vertices = (graph.parents_of(self) + graph.children_of(self))
+        io_vertices = self.parents.union(self.children)
         dataset_name_proxies = dict((v.name, v.name_proxy(element))
                                     for v in io_vertices
                                     if hasattr(v, "name_proxy"))
@@ -543,21 +531,19 @@ class Computation(Vertex):
         return element.render_template(self.command_template,
                                        extra_names=dict_)
 
-    def is_up_to_date(self, graph, element):
+    def is_up_to_date(self, element):
         child_oldest, child_newest = mtime.extrema(child.mtimes[element]
-                                                   for child
-                                                   in graph.children_of(self))
+                                                   for child in self.children)
         if not mtime.missing(child_oldest, child_newest):
             _, input_newest = mtime.extrema(parent.mtimes[element]
-                                            for parent
-                                            in graph.parents_of(self)
+                                            for parent in self.parents
                                             if isinstance(parent, Dataset))
             if input_newest <= child_oldest:
                 return True
         return False
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, options):
+    def update_all_elements(self, options):
         if options.get("survey_only", False):
             return
 
@@ -568,12 +554,12 @@ class Computation(Vertex):
                 self.statuses.save_to_file()
             return
 
-        yield from super().update_all_elements(graph, options)
+        yield from super().update_all_elements(options)
         if options.get("cache", False):
             self.statuses.save_to_file()
 
     @dispatch.tasklet
-    def update_element(self, graph, element, is_full, options):
+    def update_element(self, element, is_full, options):
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -589,25 +575,25 @@ class Computation(Vertex):
         if self.statuses[element]:
             return
 
-        yield from self.execute(graph, element, options)
+        yield from self.execute(element, options)
 
-    def clean(self, graph, element, cache_only=False):
-        self.invalidate_computations(graph, element)
+    def clean(self, element, cache_only=False):
+        self.invalidate_computations(element)
         if not cache_only:
-            for child in graph.children_of(self):
+            for child in self.children:
                 child.delete_files(element)
 
     @dispatch.subtasklet
-    def execute(self, graph, element, options):
-        self.invalidate_computations(graph, element)
-        for child in graph.children_of(self):
+    def execute(self, element, options):
+        self.invalidate_computations(element)
+        for child in self.children:
             child.delete_files(element)
             child.create_dirs(element)
-        yield from self.run_command(graph, element, options)
+        yield from self.run_command(element, options)
 
     @dispatch.subtasklet
-    def run_command(self, graph, element, options):
-        command = self.render_command(graph, element)
+    def run_command(self, element, options):
+        command = self.render_command(element)
         print_command = options.get("print_executed_commands", False)
 
         def task_func():
@@ -657,17 +643,17 @@ class Computation(Vertex):
             # If the command failed, we need to delete any output files, which
             # may be corrupt.
             if not outputs_are_valid:
-                for child in graph.children_of(self):
+                for child in self.children:
                     child.delete_files(element)
 
-    def invalidate_computations(self, graph, element):
+    def invalidate_computations(self, element):
         del self.statuses[element]
-        super().invalidate_computations(graph, element)
+        super().invalidate_computations(element)
 
 
 class Survey(Vertex):
-    def __init__(self, graph, name, scope, surveyer):
-        super().__init__(graph, name, scope)
+    def __init__(self, name, scope, surveyer):
+        super().__init__(name, scope)
         self.surveyer = surveyer
 
         self.results = {}
@@ -693,13 +679,13 @@ class Survey(Vertex):
         return self.results[element]
 
     @dispatch.tasklet
-    def update_all_elements(self, graph, options):
-        yield from super().update_all_elements(graph, options)
+    def update_all_elements(self, options):
+        yield from super().update_all_elements(options)
         if options.get("cache", False):
             self.mtimes.save_to_file()
 
     @dispatch.tasklet
-    def update_element(self, graph, element, is_full, options):
+    def update_element(self, element, is_full, options):
         dprint_update(self,
                       "updating {} element:".
                       format("full" if is_full else "partial"),
@@ -709,7 +695,7 @@ class Survey(Vertex):
             dprint_undemarcated("undemarcated", self, element)
             return
 
-        for parent in graph.parents_of(self):
+        for parent in self.parents:
             if isinstance(parent, Dataset):
                 # Command survey with input(s).
                 break
@@ -719,7 +705,7 @@ class Survey(Vertex):
         else:
             # We have a command survey with no inputs or a filename survey on a
             # non-computed dataset: always run survey.
-            yield from self.execute(graph, element, options)
+            yield from self.execute(element, options)
             return
 
         our_oldest, our_newest = self.mtimes[element]
@@ -729,24 +715,23 @@ class Survey(Vertex):
                 return
 
             _, input_newest = mtime.extrema(parent.mtimes[element]
-                                            for parent
-                                            in graph.parents_of(self)
+                                            for parent in self.parents
                                             if isinstance(parent, Dataset))
             if input_newest <= our_oldest:
                 self.load_result(element)
                 return
 
-        yield from self.execute(graph, element, options)
+        yield from self.execute(element, options)
 
     @dispatch.subtasklet
-    def execute(self, graph, element, options):
+    def execute(self, element, options):
         self.surveyer.delete_files(element, delete_surveyed_files=False)
         del self.mtimes[element]
-        self.invalidate_computations(graph, element)
+        self.invalidate_computations(element)
 
         # Bind input dataset names.
         dataset_name_proxies = dict((parent.name, parent.name_proxy(element))
-                                    for parent in graph.parents_of(self)
+                                    for parent in self.parents
                                     if isinstance(parent, Dataset))
         dict_ = dataset_name_proxies
         dict_["__name__"] = self.name
@@ -759,7 +744,7 @@ class Survey(Vertex):
     def load_result(self, element):
         self.results[element] = self.surveyer.load_result(element)
 
-    def delete_files(self, graph, element):
+    def delete_files(self, element):
         self.surveyer.delete_files(element, delete_surveyed_files=True)
         del self.mtimes[element]
 

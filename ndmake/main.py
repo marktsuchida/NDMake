@@ -214,12 +214,12 @@ def run(argv=sys.argv):
         options["cache"] = False
         options["print_executed_commands"] = args.verbose
         options["print_traversed_vertices"] = False
-        tasklet = graph.update_vertices(graph.sinks(), options)
+        tasklet = depgraph.update_vertices(graph.sinks(), options)
         dispatch.start_with_tasklet(tasklet)
 
         # Now do the cleaning.
         for vertex in target_vertices:
-            vertex.clean(graph, space.Element(), cache_only=not args.clean)
+            vertex.clean(space.Element(), cache_only=not args.clean)
 
         return
 
@@ -244,7 +244,8 @@ def run(argv=sys.argv):
     options["print_executed_commands"] = args.verbose
     options["print_traversed_vertices"] = not args.silent
 
-    tasklet = graph.update_vertices_with_threadpool(target_vertices, options)
+    tasklet = depgraph.update_vertices_with_threadpool(target_vertices,
+                                                       options)
     dispatch.start_with_tasklet(tasklet)
 
 
