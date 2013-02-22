@@ -255,9 +255,20 @@ class Vertex:
         if isinstance(self, Survey):
             return Survey
 
-    def is_ancestor_of(self, other):
+    def iter_descendants(self, _seen=None):
+        if _seen is None:
+            _seen = set()
+
         for child in self.children:
-            if other is child or child.is_ancestor_of(other):
+            if child in _seen:
+                continue
+            yield child
+            _seen.add(child)
+            yield from child.iter_descendants(_seen)
+
+    def is_ancestor_of(self, other):
+        for descendant in self.iter_descendants():
+            if other is descendent:
                 return True
 
     @dispatch.tasklet
