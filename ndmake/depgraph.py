@@ -90,8 +90,8 @@ class Graph:
                 fprint("{} [label=\"{}\" shape=\"{}\" color=\"{}\"];".
                        format(vertex.graphviz_name, label, shape, color))
             for parent, child in self._edges:
-                fprint("{} -> {};".format(child.graphviz_name,
-                                          parent.graphviz_name))
+                fprint("{} -> {};".format(parent.graphviz_name,
+                                          child.graphviz_name))
             fprint("}")
 
     def vertex_by_name(self, name, type_):
