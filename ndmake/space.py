@@ -493,6 +493,13 @@ class Element:
         coords[extent.dimension] = value
         return Element(space, coords)
 
+    def inserted(self, index, extent, value):
+        space = Space(self.space.extents[:index] + [extent] +
+                      self.space.extents[index:])
+        coords = self.coordinates.copy()
+        coords[extent.dimension] = value
+        return Element(space, coords)
+
 
 #
 # Surveyer
@@ -729,7 +736,7 @@ class Cache:
         self._load_from_file()
         element = self.space.canonicalized_element(element,
                                                    allow_nonsub_extents=True)
-        self._invalidate(element, 0)
+        self._invalidate(element)
         self._delete_file()
 
     def _subtree(self, key):
@@ -777,7 +784,7 @@ class Cache:
 
         return self.cached
 
-    def _invalidate(self, key_element, dim_index):
+    def _invalidate(self, key_element, dim_index=0):
         self.cached = None
 
         if not (len(key_element) - dim_index):
@@ -793,9 +800,10 @@ class Cache:
 
         # Key element skips our dimension.
         for key in self.extent.iterate(key_element):
-            self._subtree(key)._invalidate(key_element, dim_index)
+            new_key_element = key_element.inserted(dim_index, self.extent, key)
+            self._subtree(key)._invalidate(new_key_element, dim_index + 1)
 
-    def _set(self, element, value, dim_index):
+    def _set(self, element, value, dim_index=0):
         if not (len(element) - dim_index):
             self.cached = value
             return
@@ -842,7 +850,7 @@ class Cache:
                     element = Element(Space(self.space.extents[:len(coords)]),
                                       coords)
                     value = self.reader(value_string)
-                    self._set(element, value, 0)
+                    self._set(element, value)
             except:
                 self.cached = None
                 self.map.clear()
