@@ -297,6 +297,10 @@ class Vertex:
                                      return_chan=chunk_complete_chan)
                 completion_chans = [chunk_complete_chan]
 
+            # Allow other tasklets to make progress during a lengthly
+            # mtime-checking iteration without command execution.
+            yield
+
         all_complete_chan = yield dispatch.MakeChannel()
         yield dispatch.Spawn(mux.gather(completion_chans),
                              return_chan=all_complete_chan)
