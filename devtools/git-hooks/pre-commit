@@ -1,0 +1,47 @@
+#!/usr/bin/env python
+
+# Git pre-commit hook to ensure PEP 8 compliance.
+
+# Modified from http://tech.myemma.com/python-pep8-git-hooks/ or
+# https://gist.github.com/lentil/810399
+
+# Requires the pep8 script, available from https://pypi.python.org/pypi/pep8.
+# This script is written to run with either Python 2 or Python 3.
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+ 
+ 
+def system(*args, **kwargs):
+    kwargs.setdefault('stdout', subprocess.PIPE)
+    proc = subprocess.Popen(args, **kwargs)
+    out, err = proc.communicate()
+    return out
+ 
+ 
+def main():
+    modified = re.compile('^[AM]+\s+(?P<name>.*\.py)', re.MULTILINE)
+    files = system('git', 'status', '--porcelain').decode()
+    files = modified.findall(files)
+ 
+    tempdir = tempfile.mkdtemp()
+    for name in files:
+        filename = os.path.join(tempdir, name)
+        filepath = os.path.dirname(filename)
+        if not os.path.exists(filepath):
+            os.makedirs(filepath)
+        with open(filename, 'w') as f:
+            system('git', 'show', ':' + name, stdout=f)
+    output = system('pep8', '.', cwd=tempdir).decode()
+    shutil.rmtree(tempdir)
+    if output:
+        sys.stdout.write(output)
+        sys.exit(1)
+ 
+ 
+if __name__ == '__main__':
+    main()

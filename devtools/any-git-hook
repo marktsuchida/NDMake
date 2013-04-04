@@ -1,0 +1,9 @@
+#!/bin/bash
+if [ -x $0.local ]; then
+	$0.local "$@" || exit $?
+fi
+REPO_ROOT=$(git rev-parse --show-toplevel)
+SCRIPT=$REPO_ROOT/devtools/git-hooks/$(basename $0)
+if [ -x $SCRIPT ]; then
+	$SCRIPT "$@" || exit $?
+fi
