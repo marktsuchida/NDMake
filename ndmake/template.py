@@ -24,6 +24,8 @@ class Environment:
             e = jinja2.sandbox.ImmutableSandboxedEnvironment(loader=loader)
 
             import os.path
+            e.filters["split"] = lambda s, sep: s.split(sep)
+            e.filters["splitn"] = lambda s, sep, n: s.split(sep, n)
             e.filters["dirname"] = os.path.dirname
             e.filters["basename"] = os.path.basename
             e.filters["stripext"] = lambda p: os.path.splitext(p)[0]
