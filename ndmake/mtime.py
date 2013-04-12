@@ -34,7 +34,11 @@ while True:
         FAR_PAST >>= 1
     else:
         # Clip to a recognizable minimum to aid debugging.
-        min_far_past = time.mktime((1, 1, 1, 0, 0, 0, 0, 0, 0))
+        try:
+            # This overflows on some OSs (e.g. OS X).
+            min_far_past = time.mktime((1000, 1, 1, 0, 0, 0, 0, 0, 0))
+        except:
+            min_far_past = 0
         FAR_PAST = max(FAR_PAST, min_far_past)
         break
 
