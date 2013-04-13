@@ -589,7 +589,7 @@ class ValuesCommandSurveyer(CommandSurveyer):
     def __init__(self, name, scope, command_template, transform_template=None):
         if transform_template is not None:
             raise NotImplementedError("transform template not implemented")
-        super().__init__(name, scope)
+        super().__init__(name, scope, command_template)
 
     def convert_result(self, result_text):
         return result_text.splitlines()

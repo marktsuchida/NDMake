@@ -128,7 +128,8 @@ class Pipeline:
                            ("dimension", name))
 
         mode = None
-        mode_keys = ("values", "range", "command", "range_command", "match")
+        mode_keys = ("values", "range", "values_command", "range_command",
+                     "slice_command", "match")
         for key in mode_keys:
             if key in entries:
                 if mode is not None:
@@ -140,7 +141,7 @@ class Pipeline:
                            format(modes=or_join(mode_keys)))
 
         # Command-based surveyed dimensions optionally depend on inputs.
-        if mode in ("command", "range_command"):
+        if mode in ("values_command", "range_command", "slice_command"):
             for dataset in entries.get("inputs", ()):
                 self._add_edge(("dataset", dataset), ("dimension", name))
 
@@ -177,7 +178,7 @@ class Pipeline:
         self._add_edge(super_entity, ("subdomain", name))
 
         mode = None
-        mode_keys = ("values", "range", "slice", "command",
+        mode_keys = ("values", "range", "slice", "values_command",
                      "range_command", "slice_command", "match")
         mode_key_count = 0
         for key in mode_keys:
@@ -191,7 +192,7 @@ class Pipeline:
                            format(modes=or_join(mode_keys)))
 
         # Command-based surveyed subdomains optionally depend on inputs.
-        if mode in ("command", "range_command", "slice_command"):
+        if mode in ("values_command", "range_command", "slice_command"):
             for dataset in entries.get("inputs", ()):
                 self._add_edge(("dataset", dataset), ("dimension", name))
 
@@ -406,10 +407,11 @@ class Pipeline:
             template = new_template("__slice_{}".format(name),
                                     entries["slice"])
 
-        elif "command" in entries:
+        elif "values_command" in entries:
             classes = (space.EnumeratedFullExtent,
                        space.EnumeratedSubextent)
-            tmpl = new_template("__vcmd_{}".format(name), entries["command"])
+            tmpl = new_template("__vcmd_{}".format(name),
+                                entries["values_command"])
             if "transform" in entries:
                 tfm_tmpl = new_template("__tform_{}".format(name),
                                         entries["transform"])
